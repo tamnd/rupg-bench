@@ -880,9 +880,20 @@ fn tpch_steps(
     }
     let settings = suite::Settings { runs, cold, cgroup_prefix: format!("tpch-{engine}") };
     let mut results = suite::run(target, &queries, &settings, say);
-    for r in &mut results {
+    answer_files(&mut results, save_answers, expected)?;
+    let rows: Vec<Json> = results.iter().map(suite::QueryResult::to_json).collect();
+    finish_suite(&results, rows, expected, result, say)
+}
+
+/// Saves the answers of the queries to `save`, as `.tsv` files, and checks them against `expected`: the `.out` files of the TPC-H kit, or `.tsv` files from an earlier `--save-answers`.
+fn answer_files(
+    results: &mut [suite::QueryResult],
+    save: Option<&str>,
+    expected: Option<&str>,
+) -> Result<(), String> {
+    for r in results {
         let Some(actual) = &r.answer else { continue };
-        if let Some(dir) = save_answers {
+        if let Some(dir) = save {
             std::fs::create_dir_all(dir).map_err(|e| format!("{dir}: {e}"))?;
             let path = Path::new(dir).join(format!("{}.tsv", r.name));
             std::fs::write(&path, answers::to_tsv(actual))
@@ -906,8 +917,19 @@ fn tpch_steps(
             r.check = Some(answers::compare(&want, actual, tol));
         }
     }
-    let t = suite::totals(&results);
-    for r in &results {
+    Ok(())
+}
+
+/// Adds the totals and the rows of the queries to `result`. It fails when a query failed or gave a wrong answer.
+fn finish_suite(
+    results: &[suite::QueryResult],
+    rows: Vec<Json>,
+    expected: Option<&str>,
+    result: &mut Json,
+    say: &dyn Fn(&str),
+) -> Result<(), String> {
+    let t = suite::totals(results);
+    for r in results {
         if let Some(Err(e)) = &r.check {
             say(&format!("{:<6} WRONG: {e}", r.name));
         }
@@ -916,22 +938,18 @@ fn tpch_steps(
         "hot total {:.3} s, cold total {:.3} s, {} failed, {} of {} checked answers wrong",
         t.hot, t.cold, t.failed, t.wrong, t.checked
     ));
-    add(
-        result,
-        "totals",
-        Json::obj()
-            .with("hot_s", t.hot)
-            .with("cold_s", t.cold)
-            .with("failed", t.failed)
-            .with("checked", t.checked)
-            .with("wrong", t.wrong)
-            .with("answers_from", expected.map(str::to_owned)),
-    );
-    add(
-        result,
-        "results",
-        Json::from(results.iter().map(suite::QueryResult::to_json).collect::<Vec<Json>>()),
-    );
+    *result = std::mem::replace(result, Json::Null)
+        .with(
+            "totals",
+            Json::obj()
+                .with("hot_s", t.hot)
+                .with("cold_s", t.cold)
+                .with("failed", t.failed)
+                .with("checked", t.checked)
+                .with("wrong", t.wrong)
+                .with("answers_from", expected.map(str::to_owned)),
+        )
+        .with("results", Json::from(rows));
     if t.failed > 0 {
         return Err(format!("{} of {} queries failed", t.failed, results.len()));
     }

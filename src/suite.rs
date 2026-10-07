@@ -127,7 +127,7 @@ impl QueryResult {
     }
 }
 
-/// The sums of a suite run.
+/// The sums of a suite run. The time sums leave out the queries that failed.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Totals {
     pub(crate) hot: f64,
@@ -139,8 +139,8 @@ pub(crate) struct Totals {
 
 pub(crate) fn totals(results: &[QueryResult]) -> Totals {
     Totals {
-        hot: results.iter().filter_map(QueryResult::hot).sum(),
-        cold: results.iter().filter_map(QueryResult::cold).sum(),
+        hot: results.iter().filter(|r| r.error.is_none()).filter_map(QueryResult::hot).sum(),
+        cold: results.iter().filter(|r| r.error.is_none()).filter_map(QueryResult::cold).sum(),
         failed: results.iter().filter(|r| r.error.is_some()).count(),
         wrong: results.iter().filter(|r| matches!(r.check, Some(Err(_)))).count(),
         checked: results.iter().filter(|r| r.check.is_some()).count(),
@@ -190,12 +190,29 @@ pub(crate) fn run(
     out
 }
 
-fn duckdb_argv(bin: &str, db: &Path, threads: Option<u32>) -> Vec<String> {
+pub(crate) fn duckdb_argv(bin: &str, db: &Path, threads: Option<u32>) -> Vec<String> {
     let mut argv = vec![bin.to_owned(), "-readonly".to_owned(), db.display().to_string()];
     if let Some(t) = threads {
         argv.extend(["-cmd".to_owned(), format!("SET threads = {t}")]);
     }
     argv
+}
+
+/// The answer of a query from one more `duckdb` run that is not measured. `base` is the program, its options and the database file.
+pub(crate) fn duckdb_answer(mut argv: Vec<String>, sql: &str) -> Result<Answer, String> {
+    let copy = format!("COPY ({}) TO '/dev/stdout' (FORMAT csv, HEADER)", strip_semicolon(sql));
+    argv.extend(["-c".to_owned(), copy]);
+    let out = Command::new(&argv[0])
+        .args(&argv[1..])
+        .output()
+        .map_err(|e| format!("{}: {e}", argv[0]))?;
+    if !out.status.success() {
+        return Err(format!(
+            "the answer run failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    answers::parse_csv(&String::from_utf8_lossy(&out.stdout))
 }
 
 fn duckdb_query(
@@ -242,19 +259,7 @@ fn duckdb_query(
         cg.kill_all()?;
         cg.remove()?;
         // The answer, from one more run that is not measured.
-        let mut argv = base;
-        let copy =
-            format!("COPY ({}) TO '/dev/stdout' (FORMAT csv, HEADER)", strip_semicolon(&q.sql));
-        argv.extend(["-c".to_owned(), copy]);
-        let out =
-            Command::new(&argv[0]).args(&argv[1..]).output().map_err(|e| format!("{bin}: {e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "the answer run failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        result.answer = Some(answers::parse_csv(&String::from_utf8_lossy(&out.stdout))?);
+        result.answer = Some(duckdb_answer(base, &q.sql)?);
         Ok(())
     })();
     if let Err(e) = attempt {
@@ -280,7 +285,7 @@ fn restart_cold(unit: &str, conn: &Config) -> Result<(), String> {
     }
 }
 
-fn systemctl(verb: &str, unit: &str) -> Result<(), String> {
+pub(crate) fn systemctl(verb: &str, unit: &str) -> Result<(), String> {
     let status = Command::new("systemctl")
         .args([verb, unit])
         .status()
@@ -393,7 +398,8 @@ mod tests {
         assert_eq!((r.cold(), r.hot(), r.peak()), (Some(3.0), Some(1.5), 30));
         let one = QueryResult { runs: vec![run(4.0)], check: None, ..r.clone() };
         assert_eq!(one.hot(), Some(4.0));
-        let t = totals(&[r, one]);
-        assert_eq!(t, Totals { hot: 5.5, cold: 7.0, failed: 0, wrong: 1, checked: 1 });
+        let failed = QueryResult { error: Some("x".to_owned()), check: None, ..r.clone() };
+        let t = totals(&[r, one, failed]);
+        assert_eq!(t, Totals { hot: 5.5, cold: 7.0, failed: 1, wrong: 1, checked: 1 });
     }
 }
