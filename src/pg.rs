@@ -411,6 +411,25 @@ impl Conn {
         }
     }
 
+    /// As `next_done`, but it keeps the values of the rows as text. The column names are empty, because `queue` does not ask for a description.
+    pub(crate) fn next_rows(&mut self) -> Result<Result<Rows, PgError>, PgError> {
+        let mut rows = Rows::default();
+        let mut err = None;
+        loop {
+            let (tag, msg) = self.read_message()?;
+            match tag {
+                b'2' | b'n' | b'N' | b'S' => {}
+                b'D' => rows.rows.push(parse_data_row(&msg)?),
+                b'C' => rows.tag = cstring_at(&msg, 0)?.0,
+                b'E' => err = Some(parse_error(&msg)),
+                b'Z' => return Ok(err.map_or(Ok(rows), Err)),
+                other => {
+                    return Err(client_error(format!("unexpected message {:?}", other as char)));
+                }
+            }
+        }
+    }
+
     fn send(&mut self, tag: u8, body: &[u8]) -> Result<(), PgError> {
         let len =
             u32::try_from(body.len() + 4).map_err(|_| client_error("a message is too long"))?;

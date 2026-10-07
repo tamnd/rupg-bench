@@ -12,7 +12,7 @@ The procedure is [`spec/20-benchmarks.md`](https://github.com/tamnd/rupg/blob/ma
 
 ## Status
 
-Early. The crate builds and CI is green. TPC-H, YCSB and pgbench run, and the other suites do not run yet. `rupg-bench gates` prints the twelve gates of spec/02 section 2.10, `rupg-bench pins` prints the pinned versions, `rupg-bench measure` runs the cgroup v2 runner, `rupg-bench load` runs the load cases, `rupg-bench answers` checks answer sets, `rupg-bench report` writes the report files, `rupg-bench pgbench` runs the pgbench smoke run with its check, `rupg-bench instructions` counts the instructions of each query, `rupg-bench tpch` runs TPC-H, and `rupg-bench ycsb` runs YCSB. The first milestone, M0, builds the harness and measures every baseline that a later gate uses. Every command below is the planned interface from the spec.
+Early. The crate builds and CI is green. TPC-H, TPC-C, YCSB and pgbench run, and the other suites do not run yet. `rupg-bench gates` prints the twelve gates of spec/02 section 2.10, `rupg-bench pins` prints the pinned versions, `rupg-bench measure` runs the cgroup v2 runner, `rupg-bench load` runs the load cases, `rupg-bench answers` checks answer sets, `rupg-bench report` writes the report files, `rupg-bench pgbench` runs the pgbench smoke run with its check, `rupg-bench instructions` counts the instructions of each query, `rupg-bench tpch` runs TPC-H, `rupg-bench ycsb` runs YCSB, and `rupg-bench tpcc` runs TPC-C. The first milestone, M0, builds the harness and measures every baseline that a later gate uses. Every command below is the planned interface from the spec.
 
 ## The gates
 
@@ -80,7 +80,7 @@ The commands below are the planned interface. The harness is one Rust crate with
 cargo run --release -- machine up 4xl
 cargo run --release -- clickbench --machine 4xl --rows full
 cargo run --release -- tpch --scale 100 --machine tpch
-cargo run --release -- tpcc --form procedures --machine oltp
+cargo run --release -- tpcc --unit postgresql@19-main --steps procedures,statements --sync on,off
 cargo run --release -- ycsb --unit postgresql@19-main --workloads a --rows 16
 cargo run --release -- connections --count 1000
 cargo run --release -- load --case a
@@ -123,11 +123,13 @@ rupg-bench report --result idle.json --suite idle-base --machine server3 --smoke
 rupg-bench pgbench --unit postgresql@19-main --scale 1 --clients 4 --time 30 --smoke --report reports --machine server3
 ```
 
-`rupg-bench instructions` is the instruction count runner of spec/21 section 21.14. It runs each query of a set under `perf stat -e instructions`. For DuckDB, perf counts the `duckdb` process with one thread. For a server, perf counts the cgroup of the server on all CPUs while `psql` sends the query, so the count is the work of the server and not the work of the client. Each query runs three times and the minimum counts. The count of `SELECT 1` in the same way is subtracted, so the net count is the work of the query. A set is a file with one query on each line, named `q0` to `q42` for ClickBench, or a directory of `<name>.sql` files. A server needs `--engine NAME`, and the report name has the set and the engine. `--ratchet ratchet.toml` fails when one query rises by more than 3 percent or the total by more than 1 percent. `--save` writes the table for the ratchet. The ratchet is filled only on the dedicated runner, so [`ratchet.toml`](ratchet.toml) has no table yet.
+`rupg-bench instructions` is the instruction count runner of spec/21 section 21.14. It runs each query of a set under `perf stat -e instructions`. For DuckDB, perf counts the `duckdb` process with one thread. For a server, perf counts the cgroup of the server on all CPUs while `psql` reads the query on its standard input and sends each statement, so the count is the work of the server and not the work of the client. `--password-file` gives `psql` a password in `PGPASSWORD`. Each query runs three times and the minimum counts. The count of `SELECT 1` in the same way is subtracted, so the net count is the work of the query. A set is a file with one query on each line, named `q0` to `q42` for ClickBench, or a directory of `<name>.sql` files. A server needs `--engine NAME`, and the report name has the set and the engine. `--ratchet ratchet.toml` fails when one query rises by more than 3 percent or the total by more than 1 percent. `--save` writes the table for the ratchet. The ratchet is filled only on the dedicated runner, so [`ratchet.toml`](ratchet.toml) has no table yet. `rupg-bench fixed-set --out DIR` writes the YCSB and TPC-C parts of the fixed set: `DIR/ycsb/read1000.sql` has 1,000 point reads with scrambled zipfian keys, and `DIR/tpcc/neword100.sql` has 100 New-Orders in plain statements, with 5 + 2n statements each. The ClickBench part is the 43 queries on the first 1,000,000 rows of `hits`, and the TPC-H part is the 22 queries of `qgen -d` at SF 0.1. Each New-Order set adds 100 orders, so the database grows a little with each run.
 
 ```sh
 rupg-bench instructions --set clickbench --queries queries.sql --duckdb hits.db --duckdb-bin duckdb
 rupg-bench instructions --set clickbench --queries queries.sql --engine postgresql --unit postgresql@19-main --ratchet ratchet.toml
+rupg-bench fixed-set --out fixed
+rupg-bench instructions --set tpcc --queries fixed/tpcc --engine postgresql --unit postgresql@19-main --conn "user=tpcc dbname=tpcc" --password-file /etc/rupg-bench/tpcc.pass
 ```
 
 `rupg-bench tpch` is the TPC-H driver of spec/20 section 20.7. `machines/install/tpch-tools.sh` builds `dbgen` and `qgen` 3.0.1 from the pin. The step `gen` runs `dbgen` into the data directory and writes the 22 queries of `qgen -d` to `DATA/queries`. Q15 uses the approved variant A of the kit (a `WITH` clause in place of the view). The step `load` creates the 8 tables with the types, primary keys and foreign keys of the specification and loads the same `.tbl` files into each system. For a server it adds the keys after the rows, then runs `VACUUM ANALYZE` and `CHECKPOINT`. The step `run` runs each query 3 times. The first run is cold: the driver drops the page cache, and for a server it also restarts the unit. The hot time of a query is the smallest of the other runs. Each query runs in its own cgroup, or in the cgroup of the server unit, and the result has the counters of each run. `--answers` checks the answers against the `.out` files of the kit at SF1, or against `.tsv` files from `--save-answers` of another run.
@@ -141,6 +143,12 @@ rupg-bench tpch --tools tpch_tools_3.0.1/dbgen --scale 1 --data sf1 --engine pos
 
 ```sh
 rupg-bench ycsb --unit postgresql@19-main --records 1000000 --rows 1,16,16x64 --time 60 --sync on
+```
+
+`rupg-bench tpcc` is the TPC-C driver of spec/20 section 20.8. It has two forms on the schema that HammerDB builds. The form `procedures` runs HammerDB TPROC-C, which calls the stored procedures that HammerDB makes in the database. The form `statements` is a driver in the harness, because HammerDB has no form with plain statements for PostgreSQL. Its terminals send prepared statements, so a New-Order makes 5 + 2n round trips: the customer and warehouse read with `BEGIN`, the district update, the insert into `orders`, the insert into `new_order`, a read of each item and an update of each stock row, and one insert of all order lines with `COMMIT`. The items are sorted, so two New-Orders do not wait on each other in a cycle, and 1 percent of New-Orders roll back on an unused item. The mix is the HammerDB mix, with no keying or think time. The step `build` drops the database `tpcc` and builds `--warehouses` with HammerDB. Each run has a ramp of `--rampup` minutes and counts `--duration` minutes, for each count of `--vu` and each value of `--sync`. NOPM is the change of `sum(d_next_o_id)` over the counted minutes, as HammerDB counts it. The server cgroup is measured over the same minutes, with the idle base first, so the result has NOPM per core, the server CPU and the device write bytes for each New-Order, and `memory.peak`. The statement form gives the p50, p95 and p99 of each transaction, and the procedure form gives the time profile of HammerDB. For a run with `synchronous_commit` on, the result prints the sync bound `0.45 x 60 x T / s`, with `s` the `fdatasync` p50 that the driver measures next to the data directory. The conditions 1 to 4 of clause 3.3.2 are checked before the runs and after each run, and a run that fails one is not a result. The step `check` only checks them. HammerDB logs in with a password, so run `machines/install/hammerdb.sh` and `machines/install/tpcc-roles.sh` first.
+
+```sh
+rupg-bench tpcc --unit postgresql@19-main --warehouses 100 --vu 16 --rampup 5 --duration 20 --sync on,off
 ```
 
 ## The reporting rules

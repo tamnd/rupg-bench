@@ -629,6 +629,18 @@ pub(crate) fn run(config: &Config, s: &RunSettings, cg: &Cgroup) -> Result<(Tall
     })
 }
 
+/// `count` point reads of the keys that the scrambled zipfian distribution picks from `records` rows, one statement on each line. They are the YCSB part of the fixed set of spec/21 section 21.14.
+pub(crate) fn fixed_reads(records: u64, count: u32, seed: u64) -> String {
+    let keys = ScrambledZipfian::new(records);
+    let mut rng = Rng::new(seed);
+    let mut s = String::new();
+    for _ in 0..count {
+        let k = key_name(keys.next(&mut rng));
+        s.push_str(&format!("SELECT * FROM usertable WHERE ycsb_key = '{k}';\n"));
+    }
+    s
+}
+
 /// The result of the check after a run.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct FinalCheck {
