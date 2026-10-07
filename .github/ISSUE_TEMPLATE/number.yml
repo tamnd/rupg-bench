@@ -1,0 +1,23 @@
+name: Question about a number
+description: A published number looks wrong, or a baseline is not set up fairly.
+title: "number: "
+labels: ["kind/perf"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A number is valid only with five parts: the machine, the metric, a baseline measured on the same machine, the same transport for both systems, and the ratio. Tell us which part you think is wrong.
+  - type: input
+    id: report
+    attributes:
+      label: Report
+      description: The path of the report in this repository, or the link.
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What looks wrong
+      description: The number, why you think it is wrong, and your own measurement if you have one.
+    validations:
+      required: true

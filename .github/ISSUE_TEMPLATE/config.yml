@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: A slow query in rupg
+    url: https://github.com/tamnd/rupg/issues/new/choose
+    about: A performance problem in the engine goes to the engine repository.
