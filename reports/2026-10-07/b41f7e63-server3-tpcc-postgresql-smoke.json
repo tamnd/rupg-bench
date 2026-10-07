@@ -1,0 +1,553 @@
+{
+  "suite": "tpcc-postgresql",
+  "machine": "server3",
+  "date": "2026-10-07",
+  "commit": "b41f7e63",
+  "smoke": true,
+  "note": "smoke run: it shows that the driver works, it is not a baseline",
+  "engine_name": "postgresql",
+  "cgroup": "/sys/fs/cgroup/system.slice/system-postgresql.slice/postgresql@19-ycsb.service",
+  "hammerdb_version": "6.0",
+  "rampup_min": 1,
+  "duration_min": 1,
+  "seed": 1,
+  "mix": "HammerDB: New-Order 10/23, Payment 10/23, Delivery, Stock-Level and Order-Status 1/23 each, no keying or think time",
+  "kernel": "6.8.0-106-generic",
+  "server_version": "19beta4",
+  "build": {
+    "warehouses": 2,
+    "virtual_users": 2,
+    "secs": 298.9,
+    "database_bytes": 227910159,
+    "server": {
+      "wall_s": 298.905259347,
+      "cpu_usec": 29346675,
+      "user_usec": 22771921,
+      "system_usec": 6574755,
+      "rbytes": 9531392,
+      "wbytes": 480669696,
+      "memory_peak_bytes": 665829376,
+      "memory_peak_scope": "since the cgroup was created",
+      "file_max_bytes": 607207424,
+      "pss_max_bytes": 212278272,
+      "memory_current_max_bytes": 665518080,
+      "samples": 1002
+    }
+  },
+  "warehouses": 2,
+  "check_before": [
+    {
+      "condition": 1,
+      "text": "W_YTD = sum(D_YTD) for each warehouse",
+      "checked": 2,
+      "failed": 0
+    },
+    {
+      "condition": 2,
+      "text": "D_NEXT_O_ID - 1 = max(O_ID) = max(NO_O_ID) for each district",
+      "checked": 20,
+      "failed": 0
+    },
+    {
+      "condition": 3,
+      "text": "max(NO_O_ID) - min(NO_O_ID) + 1 = rows in NEW-ORDER for each district",
+      "checked": 20,
+      "failed": 0
+    },
+    {
+      "condition": 4,
+      "text": "sum(O_OL_CNT) = rows in ORDER-LINE for each district",
+      "checked": 20,
+      "failed": 0
+    }
+  ],
+  "fdatasync": {
+    "dir": "/var/lib/postgresql/19",
+    "rounds": 200,
+    "write_bytes": 8192,
+    "p50_us": 1674.7
+  },
+  "idle_base": {
+    "wall_s": 10.0091953,
+    "cpu_usec": 119402,
+    "user_usec": 41675,
+    "system_usec": 77728,
+    "rbytes": 0,
+    "wbytes": 3547136,
+    "memory_peak_bytes": 665829376,
+    "memory_peak_scope": "since the cgroup was created",
+    "file_max_bytes": 611614720,
+    "pss_max_bytes": 174551040,
+    "memory_current_max_bytes": 643317760,
+    "samples": 58
+  },
+  "server_cores": 8,
+  "rows": [
+    {
+      "form": "procedures",
+      "virtual_users": 4,
+      "synchronous_commit": "on",
+      "synchronous_commit_set_by_driver": true,
+      "tpm_source": "HammerDB TEST RESULT: pg_stat_database commits and rollbacks",
+      "time_profile": {
+        "neword": {
+          "calls": 3745,
+          "min_ms": 2.114,
+          "avg_ms": 57.281,
+          "max_ms": 890.381,
+          "total_ms": 214516.204,
+          "p99_ms": 276.326,
+          "p95_ms": 167.94,
+          "p75_ms": 78.787,
+          "p50_ms": 41.078,
+          "p25_ms": 16.725,
+          "sd_ms": 59.783,
+          "ratio_percent": 44.546
+        },
+        "payment": {
+          "calls": 3735,
+          "min_ms": 0.935,
+          "avg_ms": 51.736,
+          "max_ms": 846.372,
+          "total_ms": 193234.171,
+          "p99_ms": 259.351,
+          "p95_ms": 163.743,
+          "p75_ms": 70.398,
+          "p50_ms": 32.316,
+          "p25_ms": 13.29,
+          "sd_ms": 58.181,
+          "ratio_percent": 40.126
+        },
+        "slev": {
+          "calls": 390,
+          "min_ms": 2.17,
+          "avg_ms": 110.641,
+          "max_ms": 678.323,
+          "total_ms": 43149.914,
+          "p99_ms": 457.944,
+          "p95_ms": 292.36,
+          "p75_ms": 156.867,
+          "p50_ms": 86.413,
+          "p25_ms": 35.935,
+          "sd_ms": 100.594,
+          "ratio_percent": 8.96
+        },
+        "delivery": {
+          "calls": 368,
+          "min_ms": 4.754,
+          "avg_ms": 66.163,
+          "max_ms": 374.149,
+          "total_ms": 24348.011,
+          "p99_ms": 287.993,
+          "p95_ms": 199.245,
+          "p75_ms": 83.917,
+          "p50_ms": 50.893,
+          "p25_ms": 20.743,
+          "sd_ms": 62.468,
+          "ratio_percent": 5.056
+        },
+        "ostat": {
+          "calls": 402,
+          "min_ms": 0.532,
+          "avg_ms": 14.584,
+          "max_ms": 383.284,
+          "total_ms": 5862.847,
+          "p99_ms": 124.195,
+          "p95_ms": 60.844,
+          "p75_ms": 11.774,
+          "p50_ms": 4.558,
+          "p25_ms": 1.386,
+          "sd_ms": 30.617,
+          "ratio_percent": 1.217
+        }
+      },
+      "time_profile_note": "HammerDB times each procedure call over the whole run, the ramp too",
+      "nopm": 2069,
+      "tpm": 4726,
+      "nopm_per_core": 259,
+      "server_cpu_usec_per_new_order": 8084,
+      "server_write_bytes_per_new_order": 56912,
+      "server_memory_peak": 796893184,
+      "sync_bound_nopm": 64491,
+      "server": {
+        "wall_s": 60.410309964,
+        "cpu_usec": 16724964,
+        "user_usec": 13846313,
+        "system_usec": 2878651,
+        "rbytes": 1191936,
+        "wbytes": 117751808,
+        "memory_peak_bytes": 796893184,
+        "memory_peak_scope": "since the cgroup was created",
+        "file_max_bytes": 737177600,
+        "pss_max_bytes": 202209280,
+        "memory_current_max_bytes": 796381184,
+        "samples": 187
+      },
+      "check": [
+        {
+          "condition": 1,
+          "text": "W_YTD = sum(D_YTD) for each warehouse",
+          "checked": 2,
+          "failed": 0
+        },
+        {
+          "condition": 2,
+          "text": "D_NEXT_O_ID - 1 = max(O_ID) = max(NO_O_ID) for each district",
+          "checked": 20,
+          "failed": 0
+        },
+        {
+          "condition": 3,
+          "text": "max(NO_O_ID) - min(NO_O_ID) + 1 = rows in NEW-ORDER for each district",
+          "checked": 20,
+          "failed": 0
+        },
+        {
+          "condition": 4,
+          "text": "sum(O_OL_CNT) = rows in ORDER-LINE for each district",
+          "checked": 20,
+          "failed": 0
+        }
+      ]
+    },
+    {
+      "form": "statements",
+      "virtual_users": 4,
+      "synchronous_commit": "on",
+      "synchronous_commit_set_by_driver": true,
+      "tpm_source": "the transactions that the terminals finished in the interval",
+      "latency": {
+        "neword": {
+          "count": 1102,
+          "mean_us": 142921.9,
+          "p50_us": 70778.9,
+          "p95_us": 490733.6,
+          "p99_us": 620757,
+          "p999_us": 1061158.9,
+          "max_us": 1384812.8
+        },
+        "payment": {
+          "count": 1014,
+          "mean_us": 52004.1,
+          "p50_us": 25034.8,
+          "p95_us": 181403.6,
+          "p99_us": 327155.7,
+          "p999_us": 501219.3,
+          "max_us": 560985.6
+        },
+        "ostat": {
+          "count": 86,
+          "mean_us": 13390.5,
+          "p50_us": 4816.9,
+          "p95_us": 63176.7,
+          "p99_us": 149141.9,
+          "p999_us": 149141.9,
+          "max_us": 149141.9
+        },
+        "delivery": {
+          "count": 117,
+          "mean_us": 218326.1,
+          "p50_us": 149946.4,
+          "p95_us": 637534.2,
+          "p99_us": 750780.4,
+          "p999_us": 1124841.1,
+          "max_us": 1124841.1
+        },
+        "slev": {
+          "count": 91,
+          "mean_us": 22687.6,
+          "p50_us": 10813.4,
+          "p95_us": 77594.6,
+          "p99_us": 153501.9,
+          "p999_us": 153501.9,
+          "max_us": 153501.9
+        }
+      },
+      "new_order_rollbacks": 9,
+      "deliveries_skipped_districts": 16,
+      "retries": 0,
+      "errors": 0,
+      "first_error": null,
+      "nopm": 1094,
+      "tpm": 2404,
+      "nopm_per_core": 137,
+      "server_cpu_usec_per_new_order": 11310,
+      "server_write_bytes_per_new_order": 59465,
+      "server_memory_peak": 796893184,
+      "sync_bound_nopm": 64491,
+      "server": {
+        "wall_s": 59.945986009,
+        "cpu_usec": 12406810,
+        "user_usec": 8426527,
+        "system_usec": 3980283,
+        "rbytes": 1654784,
+        "wbytes": 65232896,
+        "memory_peak_bytes": 796893184,
+        "memory_peak_scope": "since the cgroup was created",
+        "file_max_bytes": 675782656,
+        "pss_max_bytes": 190953472,
+        "memory_current_max_bytes": 726523904,
+        "samples": 147
+      },
+      "check": [
+        {
+          "condition": 1,
+          "text": "W_YTD = sum(D_YTD) for each warehouse",
+          "checked": 2,
+          "failed": 0
+        },
+        {
+          "condition": 2,
+          "text": "D_NEXT_O_ID - 1 = max(O_ID) = max(NO_O_ID) for each district",
+          "checked": 20,
+          "failed": 0
+        },
+        {
+          "condition": 3,
+          "text": "max(NO_O_ID) - min(NO_O_ID) + 1 = rows in NEW-ORDER for each district",
+          "checked": 20,
+          "failed": 0
+        },
+        {
+          "condition": 4,
+          "text": "sum(O_OL_CNT) = rows in ORDER-LINE for each district",
+          "checked": 20,
+          "failed": 0
+        }
+      ]
+    },
+    {
+      "form": "procedures",
+      "virtual_users": 4,
+      "synchronous_commit": "off",
+      "synchronous_commit_set_by_driver": true,
+      "tpm_source": "HammerDB TEST RESULT: pg_stat_database commits and rollbacks",
+      "time_profile": {
+        "neword": {
+          "calls": 6484,
+          "min_ms": 0.66,
+          "avg_ms": 34.181,
+          "max_ms": 954.056,
+          "total_ms": 221628.359,
+          "p99_ms": 250.179,
+          "p95_ms": 112.984,
+          "p75_ms": 46.524,
+          "p50_ms": 14.279,
+          "p25_ms": 5.283,
+          "sd_ms": 53.653,
+          "ratio_percent": 45.891
+        },
+        "payment": {
+          "calls": 6318,
+          "min_ms": 0.335,
+          "avg_ms": 24.118,
+          "max_ms": 854.833,
+          "total_ms": 152379.992,
+          "p99_ms": 191.788,
+          "p95_ms": 89.438,
+          "p75_ms": 28.322,
+          "p50_ms": 9.214,
+          "p25_ms": 3.12,
+          "sd_ms": 41.463,
+          "ratio_percent": 31.553
+        },
+        "slev": {
+          "calls": 641,
+          "min_ms": 1.591,
+          "avg_ms": 68.629,
+          "max_ms": 2118.375,
+          "total_ms": 43991.472,
+          "p99_ms": 563.597,
+          "p95_ms": 258.853,
+          "p75_ms": 74.916,
+          "p50_ms": 27.085,
+          "p25_ms": 6.692,
+          "sd_ms": 142.447,
+          "ratio_percent": 9.109
+        },
+        "delivery": {
+          "calls": 671,
+          "min_ms": 1.685,
+          "avg_ms": 58.793,
+          "max_ms": 1000.77,
+          "total_ms": 39450.339,
+          "p99_ms": 357.977,
+          "p95_ms": 200.71,
+          "p75_ms": 75.23,
+          "p50_ms": 31.834,
+          "p25_ms": 10.857,
+          "sd_ms": 83.027,
+          "ratio_percent": 8.169
+        },
+        "ostat": {
+          "calls": 634,
+          "min_ms": 0.299,
+          "avg_ms": 34.293,
+          "max_ms": 600.456,
+          "total_ms": 21741.885,
+          "p99_ms": 278.399,
+          "p95_ms": 115.99,
+          "p75_ms": 43.568,
+          "p50_ms": 14.04,
+          "p25_ms": 4.477,
+          "sd_ms": 57.434,
+          "ratio_percent": 4.502
+        }
+      },
+      "time_profile_note": "HammerDB times each procedure call over the whole run, the ramp too",
+      "nopm": 3770,
+      "tpm": 8575,
+      "nopm_per_core": 471,
+      "server_cpu_usec_per_new_order": 6172,
+      "server_write_bytes_per_new_order": 48765,
+      "server_memory_peak": 796893184,
+      "sync_bound_nopm": null,
+      "server": {
+        "wall_s": 60.789189832,
+        "cpu_usec": 23269569,
+        "user_usec": 19612017,
+        "system_usec": 3657552,
+        "rbytes": 22171648,
+        "wbytes": 183844864,
+        "memory_peak_bytes": 796893184,
+        "memory_peak_scope": "since the cgroup was created",
+        "file_max_bytes": 399056896,
+        "pss_max_bytes": 236539904,
+        "memory_current_max_bytes": 482545664,
+        "samples": 177
+      },
+      "check": [
+        {
+          "condition": 1,
+          "text": "W_YTD = sum(D_YTD) for each warehouse",
+          "checked": 2,
+          "failed": 0
+        },
+        {
+          "condition": 2,
+          "text": "D_NEXT_O_ID - 1 = max(O_ID) = max(NO_O_ID) for each district",
+          "checked": 20,
+          "failed": 0
+        },
+        {
+          "condition": 3,
+          "text": "max(NO_O_ID) - min(NO_O_ID) + 1 = rows in NEW-ORDER for each district",
+          "checked": 20,
+          "failed": 0
+        },
+        {
+          "condition": 4,
+          "text": "sum(O_OL_CNT) = rows in ORDER-LINE for each district",
+          "checked": 20,
+          "failed": 0
+        }
+      ]
+    },
+    {
+      "form": "statements",
+      "virtual_users": 4,
+      "synchronous_commit": "off",
+      "synchronous_commit_set_by_driver": true,
+      "tpm_source": "the transactions that the terminals finished in the interval",
+      "latency": {
+        "neword": {
+          "count": 1119,
+          "mean_us": 148849,
+          "p50_us": 51380.2,
+          "p95_us": 499122.2,
+          "p99_us": 796917.8,
+          "p999_us": 1090519,
+          "max_us": 1404995.1
+        },
+        "payment": {
+          "count": 1026,
+          "mean_us": 39874.5,
+          "p50_us": 7995.4,
+          "p95_us": 159383.6,
+          "p99_us": 362807.3,
+          "p999_us": 692060.2,
+          "max_us": 821887.2
+        },
+        "ostat": {
+          "count": 94,
+          "mean_us": 17036.6,
+          "p50_us": 3424.3,
+          "p95_us": 76021.8,
+          "p99_us": 164448.3,
+          "p999_us": 164448.3,
+          "max_us": 164448.3
+        },
+        "delivery": {
+          "count": 117,
+          "mean_us": 225826.6,
+          "p50_us": 116916.2,
+          "p95_us": 729808.9,
+          "p99_us": 977272.8,
+          "p999_us": 1301864,
+          "max_us": 1301864
+        },
+        "slev": {
+          "count": 95,
+          "mean_us": 31930.9,
+          "p50_us": 14680.1,
+          "p95_us": 108003.3,
+          "p99_us": 171355,
+          "p999_us": 171355,
+          "max_us": 171355
+        }
+      },
+      "new_order_rollbacks": 12,
+      "deliveries_skipped_districts": 17,
+      "retries": 0,
+      "errors": 0,
+      "first_error": null,
+      "nopm": 1109,
+      "tpm": 2449,
+      "nopm_per_core": 139,
+      "server_cpu_usec_per_new_order": 10920,
+      "server_write_bytes_per_new_order": 35351,
+      "server_memory_peak": 796893184,
+      "sync_bound_nopm": null,
+      "server": {
+        "wall_s": 59.973384063,
+        "cpu_usec": 12121626,
+        "user_usec": 8961422,
+        "system_usec": 3160205,
+        "rbytes": 1486848,
+        "wbytes": 39239680,
+        "memory_peak_bytes": 796893184,
+        "memory_peak_scope": "since the cgroup was created",
+        "file_max_bytes": 384950272,
+        "pss_max_bytes": 192243712,
+        "memory_current_max_bytes": 428191744,
+        "samples": 124
+      },
+      "check": [
+        {
+          "condition": 1,
+          "text": "W_YTD = sum(D_YTD) for each warehouse",
+          "checked": 2,
+          "failed": 0
+        },
+        {
+          "condition": 2,
+          "text": "D_NEXT_O_ID - 1 = max(O_ID) = max(NO_O_ID) for each district",
+          "checked": 20,
+          "failed": 0
+        },
+        {
+          "condition": 3,
+          "text": "max(NO_O_ID) - min(NO_O_ID) + 1 = rows in NEW-ORDER for each district",
+          "checked": 20,
+          "failed": 0
+        },
+        {
+          "condition": 4,
+          "text": "sum(O_OL_CNT) = rows in ORDER-LINE for each district",
+          "checked": 20,
+          "failed": 0
+        }
+      ]
+    }
+  ]
+}

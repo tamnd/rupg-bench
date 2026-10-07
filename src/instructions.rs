@@ -4,8 +4,9 @@
 //!
 //! `ratchet.toml` holds the net count of each query from the dedicated runner. A change fails when one query rises by more than 3 percent or the total by more than 1 percent.
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::json::Json;
 use crate::toml::{Doc, Value};
@@ -66,8 +67,8 @@ fn natural_key(name: &str) -> (String, u64) {
 pub(crate) enum Engine {
     /// The client program with the engine in its process: argv before the query.
     InProcess(Vec<String>),
-    /// A server in a cgroup (the path under `/sys/fs/cgroup`) and its client: argv before the query.
-    Server { cgroup: String, client: Vec<String> },
+    /// A server in a cgroup (the path under `/sys/fs/cgroup`) and its client: the full argv. The client reads the query on its standard input, so a long set such as 100 New-Orders does not hit the limit of the kernel on one argument, and psql sends each statement as its own message, as a driver does. The password goes to the client in `PGPASSWORD`, so it is not on a command line.
+    Server { cgroup: String, client: Vec<String>, password: Option<String> },
 }
 
 impl Engine {
@@ -75,15 +76,21 @@ impl Engine {
     fn command(&self, sql: &str, out: &Path) -> Command {
         let mut c = Command::new("perf");
         c.args(["stat", "-e", "instructions", "-x", ","]).arg("-o").arg(out);
-        let argv = match self {
-            Engine::InProcess(argv) => argv,
-            Engine::Server { cgroup, client } => {
-                c.args(["-a", "-G", cgroup]);
-                client
+        match self {
+            Engine::InProcess(argv) => {
+                c.arg("--").args(argv).arg(sql);
+                c.stdin(Stdio::null());
             }
-        };
-        c.arg("--").args(argv).arg(sql);
-        c.stdout(std::process::Stdio::null());
+            Engine::Server { cgroup, client, password } => {
+                c.args(["-a", "-G", cgroup]);
+                if let Some(p) = password {
+                    c.env("PGPASSWORD", p);
+                }
+                c.arg("--").args(client);
+                c.stdin(Stdio::piped());
+            }
+        }
+        c.stdout(Stdio::null()).stderr(Stdio::piped());
         c
     }
 
@@ -92,7 +99,7 @@ impl Engine {
             Engine::InProcess(argv) => {
                 Json::obj().with("mode", "in process").with("client", argv.clone())
             }
-            Engine::Server { cgroup, client } => Json::obj()
+            Engine::Server { cgroup, client, .. } => Json::obj()
                 .with("mode", "server cgroup")
                 .with("cgroup", cgroup.as_str())
                 .with("client", client.clone()),
@@ -119,7 +126,14 @@ pub(crate) fn parse_perf(text: &str) -> Result<u64, String> {
 fn count_once(engine: &Engine, sql: &str) -> Result<u64, String> {
     let out = std::env::temp_dir().join(format!("rupg-bench-perf-{}.csv", std::process::id()));
     let mut cmd = engine.command(sql, &out);
-    let result = cmd.output().map_err(|e| format!("perf: {e}"));
+    let result = cmd.spawn().and_then(|mut child| {
+        if let Some(mut stdin) = child.stdin.take() {
+            // psql reads the script before it writes much to stderr, so one thread is enough. A write error means that psql stopped early, and its exit status tells why.
+            let _ = stdin.write_all(sql.as_bytes());
+        }
+        child.wait_with_output()
+    });
+    let result = result.map_err(|e| format!("perf: {e}"));
     let text = std::fs::read_to_string(&out).unwrap_or_default();
     let _ = std::fs::remove_file(&out);
     let result = result?;

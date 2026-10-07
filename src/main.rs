@@ -24,6 +24,7 @@ mod pins;
 mod report;
 mod suite;
 mod toml;
+mod tpcc;
 mod tpch;
 mod ycsb;
 
@@ -58,14 +59,18 @@ commands:
                               --report writes the report files under DIR (see report).
                               --smoke marks the result as a smoke run, which is not a baseline.
   instructions --queries PATH --set NAME (--duckdb DB [--duckdb-bin B] [--threads N] | --engine NAME (--unit UNIT | --attach PATH))
-          [--bin DIR] [--conn WORDS] [--repeat N] [--ratchet FILE] [--save FILE] [--smoke] [--json] [--report DIR [--machine M]]
+          [--bin DIR] [--conn WORDS] [--password-file F] [--repeat N] [--ratchet FILE] [--save FILE] [--smoke] [--json] [--report DIR [--machine M]]
                               count the instructions retired for each query with perf stat (spec/21 section 21.14).
                               PATH is a file with one query on each line or a directory of <name>.sql files.
                               --duckdb counts the duckdb process. --unit and --attach count the server cgroup on all
-                              CPUs while psql from --bin sends the query. Each query runs --repeat times (3) and the
+                              CPUs while psql from --bin reads the query on stdin and sends each statement. Each query runs --repeat times (3) and the
                               minimum counts, minus the count of SELECT 1. --ratchet compares with [instructions.NAME]
                               of a ratchet file and fails over the budgets (3 percent a query, 1 percent in total).
-                              --save writes that table for this run.
+                              --save writes that table for this run. --password-file gives psql the password in PGPASSWORD.
+  fixed-set --out DIR [--records N] [--warehouses N] [--seed N]
+                              write the YCSB and TPC-C parts of the fixed set of spec/21 section 21.14 for instructions:
+                              DIR/ycsb/read1000.sql has 1,000 YCSB point reads on a usertable of --records rows (100,000),
+                              and DIR/tpcc/neword100.sql has 100 New-Order transactions in plain statements on --warehouses (2).
   tpch --tools DIR --scale S --data DIR (--duckdb DB [--duckdb-bin B] [--threads N] [--cpus LIST] | --engine NAME (--unit UNIT | --attach PATH) [--conn WORDS])
           [--steps gen,load,run] [--runs N] [--no-cold] [--answers DIR] [--save-answers DIR] [--du PATH] [--smoke] [--json] [--report DIR [--machine M]]
                               the TPC-H driver of spec/20 section 20.7. DIR of --tools is the dbgen directory that
@@ -80,6 +85,18 @@ commands:
                               workload for each row of --rows for --time seconds (60). A row is CLIENTS, or CLIENTSxDEPTH
                               for a pipeline of DEPTH statements on each connection. --sync sets synchronous_commit on each
                               connection. The server cgroup is measured over each run, with the idle base first.
+  tpcc (--unit UNIT | --attach PATH) [--hammerdb DIR] [--host H] [--port P] [--password-file F] [--steps build,procedures,statements]
+          [--warehouses N] [--build-vu N] [--vu 8] [--rampup MINUTES] [--duration MINUTES] [--sync on,off] [--sync-dir DIR]
+          [--work DIR] [--seed N] [--smoke] [--json] [--report DIR [--machine M]]
+                              the TPC-C driver of spec/20 section 20.8. build drops the database tpcc and builds --warehouses
+                              (10) with HammerDB from DIR (/opt/rupg-bench/hammerdb). procedures runs HammerDB TPROC-C with its
+                              stored procedures. statements runs the driver of the harness, which sends plain statements, so a
+                              New-Order makes 5 + 2n round trips. Each run has a ramp of --rampup minutes (5) and counts
+                              --duration minutes (20) for each count of --vu and each value of --sync. NOPM is the change of
+                              sum(d_next_o_id). After each run the consistency conditions 1 to 4 of clause 3.3.2 must hold.
+                              The conditions are also checked before the runs, and --steps check only checks them.
+                              The roles come from machines/install/tpcc-roles.sh, which writes the password file
+                              (/etc/rupg-bench/tpcc.pass). The sync bound uses the fdatasync p50 in --sync-dir (next to the data directory).
   --version                   print the version";
 
 fn main() -> ExitCode {
@@ -127,6 +144,8 @@ fn run(argv: &[String]) -> Result<(), String> {
         "tpch" => tpch_command(a)?,
         "pgbench" => pgbench_command(a)?,
         "ycsb" => ycsb_command(a)?,
+        "tpcc" => tpcc_command(a)?,
+        "fixed-set" => fixed_set_command(a)?,
         "--version" | "-V" => println!("rupg-bench {}", env!("CARGO_PKG_VERSION")),
         "--help" | "-h" | "help" => println!("{USAGE}"),
         other => return Err(format!("usage: unknown command {other:?}\n{USAGE}")),
@@ -524,9 +543,13 @@ fn instructions_command(mut a: args::Args) -> Result<(), String> {
     let report_dir = a.value("report");
     let machine = a.value("machine");
     let bin = a.value("bin").unwrap_or_else(|| "/usr/lib/postgresql/19/bin".to_owned());
-    let conn = pg::Config::parse(
+    let mut conn = pg::Config::parse(
         &a.value("conn").unwrap_or_else(|| "user=bench dbname=bench".to_owned()),
     )?;
+    if let Some(f) = a.value("password-file") {
+        let p = std::fs::read_to_string(&f).map_err(|e| format!("{f}: {e}"))?;
+        conn.password = Some(p.trim().to_owned());
+    }
     let engine_name = a.value("engine");
     let engine = if let Some(db) = a.value("duckdb") {
         let duckdb = a.value("duckdb-bin").unwrap_or_else(|| "duckdb".to_owned());
@@ -562,8 +585,8 @@ fn instructions_command(mut a: args::Args) -> Result<(), String> {
         ];
         client.extend(["-h".to_owned(), conn.host.clone(), "-p".to_owned(), conn.port.to_string()]);
         client.extend(["-U".to_owned(), conn.user.clone(), "-d".to_owned(), conn.dbname.clone()]);
-        client.extend(["-o".to_owned(), "/dev/null".to_owned(), "-c".to_owned()]);
-        instructions::Engine::Server { cgroup, client }
+        client.extend(["-o".to_owned(), "/dev/null".to_owned(), "-f".to_owned(), "-".to_owned()]);
+        instructions::Engine::Server { cgroup, client, password: conn.password.clone() }
     };
     a.finish()?;
     let engine_name = match (&engine, engine_name) {
@@ -1214,4 +1237,400 @@ fn ycsb_steps(
     } else {
         Err(format!("wrong answers, the rows are not numbers: {}", failures.join("; ")))
     }
+}
+
+/// The `tpcc` command.
+fn tpcc_command(mut a: args::Args) -> Result<(), String> {
+    let opt = std::env::var("RUPG_BENCH_OPT").unwrap_or_else(|_| "/opt/rupg-bench".to_owned());
+    let hammerdb = PathBuf::from(a.value("hammerdb").unwrap_or_else(|| format!("{opt}/hammerdb")));
+    let host = a.value("host").unwrap_or_else(|| "/var/run/postgresql".to_owned());
+    let port: u16 = number(&mut a, "port", 5432)?;
+    let password_file = PathBuf::from(
+        a.value("password-file").unwrap_or_else(|| "/etc/rupg-bench/tpcc.pass".to_owned()),
+    );
+    let steps = a.value("steps").unwrap_or_else(|| "build,procedures,statements".to_owned());
+    let steps: Vec<String> = steps.split(',').map(str::to_owned).collect();
+    if let Some(bad) =
+        steps.iter().find(|s| !["build", "check", "procedures", "statements"].contains(&s.as_str()))
+    {
+        return Err(format!(
+            "usage: unknown step {bad:?}, the steps are build, check, procedures and statements"
+        ));
+    }
+    let warehouses: u32 = number(&mut a, "warehouses", 10)?;
+    let build_vu: u32 = number(&mut a, "build-vu", warehouses.clamp(1, 4))?;
+    let vus = a.value("vu").unwrap_or_else(|| "8".to_owned());
+    let vus = vus
+        .split(',')
+        .map(|v| {
+            v.parse::<u32>()
+                .ok()
+                .filter(|n| *n > 0)
+                .ok_or(format!("usage: --vu {v:?} is not a count"))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let rampup: u32 = number(&mut a, "rampup", 5)?;
+    let duration: u32 = number(&mut a, "duration", 20)?;
+    if warehouses == 0 || duration == 0 {
+        return Err("usage: --warehouses and --duration must be at least 1".to_owned());
+    }
+    let syncs: Vec<Option<String>> = match a.value("sync") {
+        None => vec![None],
+        Some(v) => v
+            .split(',')
+            .map(|s| match s {
+                "on" | "off" => Ok(Some(s.to_owned())),
+                _ => Err(format!("usage: --sync {s:?}: give on, off or on,off")),
+            })
+            .collect::<Result<_, _>>()?,
+    };
+    let sync_dir = a.value("sync-dir").map(PathBuf::from);
+    let work = PathBuf::from(
+        a.value("work")
+            .unwrap_or_else(|| std::env::temp_dir().join("rupg-bench-tpcc").display().to_string()),
+    );
+    let seed: u64 = number(&mut a, "seed", 1)?;
+    let smoke = a.flag("smoke");
+    let json = a.flag("json");
+    let report_dir = a.value("report");
+    let machine = a.value("machine");
+    if a.value_is_set("name") {
+        return Err("usage: a server runs in its own cgroup, so give --unit or --attach".to_owned());
+    }
+    let cg = target(&mut a)?;
+    a.finish()?;
+    let say = |line: &str| {
+        if !json {
+            println!("{line}");
+        }
+    };
+    let meta = report::Meta::now("tpcc-postgresql", machine, None, smoke);
+    let mut result = meta.to_json();
+    if smoke {
+        result =
+            result.with("note", "smoke run: it shows that the driver works, it is not a baseline");
+    }
+    let hammerdb_version = std::fs::read_to_string(hammerdb.join("VERSION"))
+        .map(|s| s.trim().to_owned())
+        .unwrap_or_default();
+    result = result
+        .with("engine_name", "postgresql")
+        .with("cgroup", cg.path.display().to_string())
+        .with("hammerdb_version", hammerdb_version)
+        .with("rampup_min", rampup)
+        .with("duration_min", duration)
+        .with("seed", seed)
+        .with("mix", "HammerDB: New-Order 10/23, Payment 10/23, Delivery, Stock-Level and Order-Status 1/23 each, no keying or think time")
+        .with(
+            "kernel",
+            std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default().trim(),
+        );
+    let plan = TpccPlan {
+        hammerdb,
+        work,
+        steps,
+        warehouses,
+        build_vu,
+        vus,
+        rampup,
+        duration,
+        syncs,
+        sync_dir,
+        seed,
+    };
+    let outcome = tpcc::Server::new(host, port, password_file)
+        .and_then(|server| tpcc_steps(&cg, &server, &plan, &mut result, &say));
+    if let Err(e) = &outcome {
+        result = result.with("error", e.as_str());
+    }
+    if let Some(dir) = &report_dir {
+        let (md, js) = report::write(Path::new(dir), &result)?;
+        say(&format!("report   {}\n         {}", md.display(), js.display()));
+    }
+    if json {
+        print!("{}", result.pretty());
+    }
+    let removed = cg.remove();
+    outcome.and(removed)
+}
+
+/// The settings of the `tpcc` command.
+#[derive(Debug)]
+struct TpccPlan {
+    hammerdb: PathBuf,
+    work: PathBuf,
+    steps: Vec<String>,
+    warehouses: u32,
+    build_vu: u32,
+    vus: Vec<u32>,
+    rampup: u32,
+    duration: u32,
+    syncs: Vec<Option<String>>,
+    sync_dir: Option<PathBuf>,
+    seed: u64,
+}
+
+/// The steps of the `tpcc` command. They add their numbers to `result`.
+fn tpcc_steps(
+    cg: &Cgroup,
+    server: &tpcc::Server,
+    plan: &TpccPlan,
+    result: &mut Json,
+    say: &dyn Fn(&str),
+) -> Result<(), String> {
+    let add = |result: &mut Json, key: &str, value: Json| {
+        *result = std::mem::replace(result, Json::Null).with(key, value);
+    };
+    let has = |s: &str| plan.steps.iter().any(|x| x == s);
+    let mut admin = pg::Conn::connect(&server.admin())?;
+    add(result, "server_version", admin.server_version.as_str().into());
+    let setting = |db: &mut pg::Conn, name: &str| -> Result<String, String> {
+        let r = db.query(&format!("SHOW {name}"))?;
+        Ok(r.rows.first().and_then(|r| r.first()).cloned().flatten().unwrap_or_default())
+    };
+    let server_sync = setting(&mut admin, "synchronous_commit")?;
+    let data_dir = setting(&mut admin, "data_directory")?;
+    say(&format!("server   {}, synchronous_commit {server_sync}", admin.server_version));
+    if has("build") {
+        say(&format!(
+            "build    {} warehouses with {} virtual users",
+            plan.warehouses, plan.build_vu
+        ));
+        admin.simple("DROP DATABASE IF EXISTS tpcc WITH (FORCE)")?;
+        admin.simple("DROP ROLE IF EXISTS tpcc")?;
+        let script = tpcc::build_script(server, plan.warehouses, plan.build_vu)?;
+        let interval = cgroup::Interval::start(cg)?;
+        let started = std::time::Instant::now();
+        let out = tpcc::run_hammerdb(&plan.hammerdb, &plan.work, "build", &script, server, cg, say);
+        let secs = started.elapsed().as_secs_f64();
+        let usage = interval.finish()?;
+        let out = out?;
+        if !out.lines.iter().any(|l| l.contains("TPCC SCHEMA COMPLETE")) {
+            return Err(format!("the HammerDB build did not complete, see {}", out.log.display()));
+        }
+        let size = admin.query("SELECT pg_database_size('tpcc')")?;
+        let size: Option<u64> = size
+            .rows
+            .first()
+            .and_then(|r| r.first().cloned().flatten())
+            .and_then(|v| v.parse().ok());
+        say(&format!("         done in {secs:.1} s"));
+        add(
+            result,
+            "build",
+            Json::obj()
+                .with("warehouses", plan.warehouses)
+                .with("virtual_users", plan.build_vu)
+                .with("secs", (secs * 10.0).round() / 10.0)
+                .with("database_bytes", size)
+                .with("server", usage.to_json()),
+        );
+    }
+    let mut db = pg::Conn::connect(&server.tpcc())?;
+    let r = db.query("SELECT count(*) FROM warehouse")?;
+    let warehouses: u32 = r
+        .rows
+        .first()
+        .and_then(|r| r.first().cloned().flatten())
+        .and_then(|v| v.parse().ok())
+        .filter(|n| *n > 0)
+        .ok_or("the database tpcc has no warehouses. Run the build step")?;
+    add(result, "warehouses", warehouses.into());
+    let mut failures = Vec::new();
+    let conditions = tpcc::consistency(&mut db)?;
+    let bad: u64 = conditions.iter().map(|c| c.failed).sum();
+    say(&format!("check    before the runs: conditions 1 to 4, {bad} failures"));
+    if bad > 0 {
+        failures.push(format!("before the runs: {bad} units fail the consistency conditions"));
+    }
+    add(result, "check_before", tpcc::conditions_json(&conditions));
+    let forms: Vec<&str> = ["procedures", "statements"].into_iter().filter(|f| has(f)).collect();
+    if forms.is_empty() {
+        return if failures.is_empty() { Ok(()) } else { Err(failures.join("; ")) };
+    }
+    let effective = |s: &Option<String>| s.clone().unwrap_or_else(|| server_sync.clone());
+    let fsync = if plan.syncs.iter().any(|s| effective(s) != "off") {
+        let dir = plan.sync_dir.clone().unwrap_or_else(|| {
+            Path::new(&data_dir).parent().map_or(PathBuf::from(&data_dir), Path::to_path_buf)
+        });
+        let p50 = tpcc::fdatasync_p50(&dir, 200)?;
+        say(&format!(
+            "fsync    fdatasync p50 {:.1} us in {}",
+            p50.as_secs_f64() * 1e6,
+            dir.display()
+        ));
+        add(
+            result,
+            "fdatasync",
+            Json::obj()
+                .with("dir", dir.display().to_string())
+                .with("rounds", 200u64)
+                .with("write_bytes", 8192u64)
+                .with("p50_us", (p50.as_secs_f64() * 1e7).round() / 10.0),
+        );
+        Some(p50)
+    } else {
+        None
+    };
+    let base = cgroup::idle_base(cg, cgroup::IDLE_BASE)?;
+    add(result, "idle_base", base.to_json());
+    let cores = tpcc::server_cores(cg);
+    add(result, "server_cores", cores.into());
+    let mut rows = Vec::new();
+    for sync in &plan.syncs {
+        let used = effective(sync);
+        for &vu in &plan.vus {
+            for form in &forms {
+                say(&format!("run      {form}, {vu} virtual users, synchronous_commit {used}"));
+                let mut row = Json::obj()
+                    .with("form", *form)
+                    .with("virtual_users", vu)
+                    .with("synchronous_commit", used.as_str())
+                    .with("synchronous_commit_set_by_driver", sync.is_some());
+                let (nopm, tpm, usage, new_orders);
+                if *form == "procedures" {
+                    if let Some(v) = sync {
+                        admin.simple(&format!("ALTER ROLE tpcc SET synchronous_commit = {v}"))?;
+                    }
+                    let script = tpcc::run_script(server, vu, plan.rampup, plan.duration)?;
+                    let name = format!("run-{form}-{vu}-{used}");
+                    let out = tpcc::run_hammerdb(
+                        &plan.hammerdb,
+                        &plan.work,
+                        &name,
+                        &script,
+                        server,
+                        cg,
+                        say,
+                    );
+                    if sync.is_some() {
+                        admin.simple("ALTER ROLE tpcc RESET synchronous_commit")?;
+                    }
+                    let out = out?;
+                    let (n, t) = tpcc::parse_result(&out.lines).ok_or(format!(
+                        "HammerDB printed no TEST RESULT, see {}",
+                        out.log.display()
+                    ))?;
+                    let u = out.measured.ok_or(format!(
+                        "HammerDB printed no start and end of the timed interval, see {}",
+                        out.log.display()
+                    ))?;
+                    let profile = std::fs::read_to_string(out.work.join("hdbxtprofile.log"))
+                        .map(|t| tpcc::parse_profile(&t))
+                        .unwrap_or_default();
+                    let mut times = Json::obj();
+                    for (name, j) in profile {
+                        times = times.with(&name, j);
+                    }
+                    row = row
+                        .with(
+                            "tpm_source",
+                            "HammerDB TEST RESULT: pg_stat_database commits and rollbacks",
+                        )
+                        .with("time_profile", times)
+                        .with(
+                            "time_profile_note",
+                            "HammerDB times each procedure call over the whole run, the ramp too",
+                        );
+                    new_orders = n as f64 * f64::from(plan.duration);
+                    (nopm, tpm, usage) = (n as f64, t as f64, u);
+                } else {
+                    let s = tpcc::RunSettings {
+                        warehouses,
+                        terminals: vu,
+                        rampup: Duration::from_secs(u64::from(plan.rampup) * 60),
+                        duration: Duration::from_secs(u64::from(plan.duration) * 60),
+                        seed: plan.seed,
+                        sync: sync.clone(),
+                    };
+                    let run = tpcc::run_statements(&server.tpcc(), &s, cg)?;
+                    let minutes = run.measured.as_secs_f64() / 60.0;
+                    let mut times = Json::obj();
+                    for (tx, name) in tpcc::TXS {
+                        times = times.with(name, run.tally.latency[tx as usize].to_json());
+                    }
+                    row = row
+                        .with(
+                            "tpm_source",
+                            "the transactions that the terminals finished in the interval",
+                        )
+                        .with("latency", times)
+                        .with("new_order_rollbacks", run.tally.rolled_back)
+                        .with("deliveries_skipped_districts", run.tally.deliveries_skipped)
+                        .with("retries", run.tally.retries)
+                        .with("errors", run.tally.errors)
+                        .with("first_error", run.tally.first_error.clone());
+                    if run.tally.errors > 0 {
+                        failures.push(format!(
+                            "statements with {vu} virtual users: {} errors, the first: {}",
+                            run.tally.errors,
+                            run.tally.first_error.clone().unwrap_or_default()
+                        ));
+                    }
+                    new_orders = run.new_orders as f64;
+                    nopm = run.new_orders as f64 / minutes;
+                    tpm = run.tally.transactions() as f64 / minutes;
+                    usage = run.usage;
+                }
+                let per_core = nopm / f64::from(cores);
+                let cpu_per_no = (new_orders > 0.0).then(|| usage.cpu_usec as f64 / new_orders);
+                let w_per_no =
+                    usage.wbytes.filter(|_| new_orders > 0.0).map(|b| b as f64 / new_orders);
+                let bound = fsync.filter(|_| used != "off").and_then(|p| tpcc::sync_bound(vu, p));
+                let conditions = tpcc::consistency(&mut db)?;
+                let bad: u64 = conditions.iter().map(|c| c.failed).sum();
+                row = row
+                    .with("nopm", nopm.round())
+                    .with("tpm", tpm.round())
+                    .with("nopm_per_core", per_core.round())
+                    .with("server_cpu_usec_per_new_order", cpu_per_no.map(|v| v.round()))
+                    .with("server_write_bytes_per_new_order", w_per_no.map(|v| v.round()))
+                    .with("server_memory_peak", usage.memory_peak)
+                    .with("sync_bound_nopm", bound.map(f64::round))
+                    .with("server", usage.to_json())
+                    .with("check", tpcc::conditions_json(&conditions));
+                say(&format!(
+                    "         {nopm:.0} NOPM ({per_core:.0} a core), {tpm:.0} TPM, cpu {} us a New-Order, sync bound {}",
+                    cpu_per_no.map_or("-".to_owned(), |v| format!("{v:.0}")),
+                    bound.map_or("-".to_owned(), |v| format!("{v:.0} NOPM"))
+                ));
+                say(&format!("         check: conditions 1 to 4, {bad} failures"));
+                if bad > 0 {
+                    failures.push(format!(
+                        "{form} with {vu} virtual users, synchronous_commit {used}: {bad} units fail the consistency conditions"
+                    ));
+                }
+                rows.push(row);
+            }
+        }
+    }
+    add(result, "rows", rows.into());
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("the run is not a result: {}", failures.join("; ")))
+    }
+}
+
+/// The `fixed-set` command.
+fn fixed_set_command(mut a: args::Args) -> Result<(), String> {
+    let out = PathBuf::from(a.value("out").ok_or("usage: fixed-set needs --out DIR")?);
+    let records: u64 = number(&mut a, "records", 100_000)?;
+    let warehouses: u32 = number(&mut a, "warehouses", 2)?;
+    let seed: u64 = number(&mut a, "seed", 1)?;
+    a.finish()?;
+    if records == 0 || warehouses == 0 {
+        return Err("usage: --records and --warehouses must be at least 1".to_owned());
+    }
+    let files = [
+        (out.join("ycsb"), "read1000.sql", ycsb::fixed_reads(records, 1000, seed)),
+        (out.join("tpcc"), "neword100.sql", tpcc::fixed_new_orders(warehouses, 100, seed)),
+    ];
+    for (dir, name, text) in files {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let path = dir.join(name);
+        std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+        println!("{}", path.display());
+    }
+    Ok(())
 }
