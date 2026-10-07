@@ -83,6 +83,8 @@ pub(crate) struct QueryResult {
     pub(crate) error: Option<String>,
     /// The result of the answer check, when there is an expected answer.
     pub(crate) check: Option<Result<(), String>>,
+    /// The rule of the check when it is not the comparison of all rows, or why the answer is not compared.
+    pub(crate) check_rule: Option<String>,
 }
 
 impl QueryResult {
@@ -123,6 +125,7 @@ impl QueryResult {
                     Some(Err(e)) => format!("WRONG: {e}"),
                 },
             )
+            .with("answer_rule", self.check_rule.clone())
             .with("error", self.error.clone())
     }
 }
@@ -229,6 +232,7 @@ fn duckdb_query(
         answer: None,
         error: None,
         check: None,
+        check_rule: None,
     };
     let attempt = (|| -> Result<(), String> {
         let cg = Cgroup::create(&format!("{}-{}", settings.cgroup_prefix, q.name), cpus)?;
@@ -306,6 +310,7 @@ fn server_query(
         answer: None,
         error: None,
         check: None,
+        check_rule: None,
     };
     let attempt = (|| -> Result<(), String> {
         let mut cg = Cgroup::attach(&cg.path)?;
@@ -394,6 +399,7 @@ mod tests {
             answer: None,
             error: None,
             check: Some(Err("x".to_owned())),
+            check_rule: None,
         };
         assert_eq!((r.cold(), r.hot(), r.peak()), (Some(3.0), Some(1.5), 30));
         let one = QueryResult { runs: vec![run(4.0)], check: None, ..r.clone() };

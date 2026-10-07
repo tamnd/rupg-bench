@@ -925,18 +925,20 @@ fn tpch_steps(
     }
     let settings = suite::Settings { runs, cold, cgroup_prefix: format!("tpch-{engine}") };
     let mut results = suite::run(target, &queries, &settings, say);
-    answer_files(&mut results, save_answers, expected)?;
+    answer_files(&mut results, save_answers, expected, None)?;
     let rows: Vec<Json> = results.iter().map(suite::QueryResult::to_json).collect();
     finish_suite(&results, rows, expected, result, say)
 }
 
 /// Saves the answers of the queries to `save`, as `.tsv` files, and checks them against `expected`: the `.out` files of the TPC-H kit, or `.tsv` files from an earlier `--save-answers`.
+/// Saves the answers to `save` and checks them against `expected`. With `queries`, an answer in a `.tsv` file is checked with the rule of `answers::Determined` for its query, so the rows that tie at a `LIMIT` can differ.
 fn answer_files(
     results: &mut [suite::QueryResult],
     save: Option<&str>,
     expected: Option<&str>,
+    queries: Option<&[String]>,
 ) -> Result<(), String> {
-    for r in results {
+    for (i, r) in results.iter_mut().enumerate() {
         let Some(actual) = &r.answer else { continue };
         if let Some(dir) = save {
             std::fs::create_dir_all(dir).map_err(|e| format!("{dir}: {e}"))?;
@@ -959,7 +961,14 @@ fn answer_files(
             } else {
                 answers::parse_tsv(&text)?
             };
-            r.check = Some(answers::compare(&want, actual, tol));
+            let rule = match queries.and_then(|q| q.get(i)) {
+                Some(sql) if tol == answers::RELATIVE => answers::Determined::of_query(sql),
+                _ => answers::Determined::All,
+            };
+            if rule != answers::Determined::All {
+                r.check_rule = Some(rule.rule());
+            }
+            r.check = Some(answers::compare_query(&want, actual, tol, &rule));
         }
     }
     Ok(())
@@ -1884,7 +1893,16 @@ fn clickbench_steps(
                     Err(e) => r.error = Some(format!("the answer pass failed: {e}")),
                 }
             }
-            answer_files(&mut results, save_answers, expected)?;
+            answer_files(&mut results, save_answers, expected, Some(&queries))?;
+            if expected.is_some() {
+                for (r, sql) in results.iter_mut().zip(&queries) {
+                    if let Some(why) = clickbench::not_comparable(sql) {
+                        r.check = None;
+                        r.check_rule = Some(format!("not compared: {why}"));
+                        say(&format!("{:<6} not compared: {why}", r.name));
+                    }
+                }
+            }
         }
         for (r, t) in results.iter().zip(&out.times) {
             rows.push(

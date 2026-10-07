@@ -12,7 +12,7 @@ The procedure is [`spec/20-benchmarks.md`](https://github.com/tamnd/rupg/blob/ma
 
 ## Status
 
-Early. The crate builds and CI is green. TPC-H, TPC-C, YCSB and pgbench run, and the other suites do not run yet. `rupg-bench gates` prints the twelve gates of spec/02 section 2.10, `rupg-bench pins` prints the pinned versions, `rupg-bench measure` runs the cgroup v2 runner, `rupg-bench load` runs the load cases, `rupg-bench answers` checks answer sets, `rupg-bench report` writes the report files, `rupg-bench pgbench` runs the pgbench smoke run with its check, `rupg-bench instructions` counts the instructions of each query, `rupg-bench tpch` runs TPC-H, `rupg-bench ycsb` runs YCSB, and `rupg-bench tpcc` runs TPC-C. The first milestone, M0, builds the harness and measures every baseline that a later gate uses. Every command below is the planned interface from the spec.
+Early. The crate builds and CI is green. ClickBench, TPC-H, TPC-C, YCSB and pgbench run, and the other suites do not run yet. `rupg-bench gates` prints the twelve gates of spec/02 section 2.10, `rupg-bench pins` prints the pinned versions, `rupg-bench measure` runs the cgroup v2 runner, `rupg-bench load` runs the load cases, `rupg-bench answers` checks answer sets, `rupg-bench report` writes the report files, `rupg-bench pgbench` runs the pgbench smoke run with its check, `rupg-bench instructions` counts the instructions of each query, `rupg-bench tpch` runs TPC-H, `rupg-bench ycsb` runs YCSB, `rupg-bench tpcc` runs TPC-C, and `rupg-bench clickbench` runs ClickBench. The first milestone, M0, builds the harness and measures every baseline that a later gate uses. Every command below is the planned interface from the spec.
 
 ## The gates
 
@@ -149,6 +149,13 @@ rupg-bench ycsb --unit postgresql@19-main --records 1000000 --rows 1,16,16x64 --
 
 ```sh
 rupg-bench tpcc --unit postgresql@19-main --warehouses 100 --vu 16 --rampup 5 --duration 20 --sync on,off
+```
+
+`rupg-bench clickbench` is the ClickBench driver of spec/20 section 20.5. It runs the scripts of one system directory of the ClickBench pin, in a copy of that directory next to a copy of `lib/`, because the scripts write the data and the results in their directory. `machines/install/clickbench.sh` fetches the pin with only `lib/` and the system directories. The driver does what `bench_main` of the pin does, in the same order: `./start`, `./load` on `--source` and a `sync`, then each query of `queries.sql` with the tries of `bench_run_query`, then `./data-size`, then the concurrent test `bench_concurrent_qps` of the pin. Before the first try of each query it does the cold cycle of the pin: `./stop`, `drop_caches` and `./start` for a server, and `drop_caches` only for a system with `BENCH_RESTARTABLE=no`. The settings come from the `export` lines of `benchmark.sh`, and the environment overrides a setting of the form `${NAME:-default}`, for example `BENCH_CONCURRENT_DURATION`. With `--unit` or `--attach` the driver measures the server cgroup, with the idle base first. With neither, each try runs in a new cgroup. The `query` script prints the result in the format of its client, so the answers come from a second pass that is not timed: through the PostgreSQL protocol for a server, or with `duckdb` on `hits.db`. `--save-answers` keeps them, and `--answers` checks them against the answers of another engine, as spec/20 section 20.5 checks every engine against PostgreSQL 19. `--result-file` writes the result in the format of ClickBench from `template.json`. The PostgreSQL scripts of the pin need `PGVERSION=19`.
+
+```sh
+PGVERSION=19 rupg-bench clickbench --dir cb/postgresql --engine postgresql --unit postgresql@19-main --source hits.tsv --save-answers ans-pg
+rupg-bench clickbench --dir cb/duckdb --engine duckdb --source hits.parquet --duckdb-bin /opt/rupg-bench/bin/duckdb --answers ans-pg
 ```
 
 ## The reporting rules

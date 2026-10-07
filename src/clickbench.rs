@@ -356,6 +356,7 @@ impl System {
                 answer: None,
                 error: None,
                 check: None,
+                check_rule: None,
             },
         };
         let attempt = (|| -> Result<(), String> {
@@ -481,6 +482,13 @@ pub(crate) struct Concurrent {
     pub(crate) qps: Option<f64>,
     pub(crate) error_ratio: Option<f64>,
     pub(crate) usage: Usage,
+}
+
+/// Why a query of an engine cannot have the answer of the PostgreSQL query with the same number, or `None`. In the pin, q27 and q28 average `length(URL)` and `length(Referer)` for PostgreSQL, which counts characters, and `STRLEN` for DuckDB, which counts bytes. The URLs have Cyrillic text, so the averages differ, and both are correct for their query.
+pub(crate) fn not_comparable(sql: &str) -> Option<&'static str> {
+    sql.to_ascii_uppercase()
+        .contains("STRLEN(")
+        .then_some("STRLEN counts bytes, and length in the PostgreSQL query counts characters")
 }
 
 fn last_line(text: &str) -> &str {
