@@ -40,6 +40,10 @@ hba=/etc/postgresql/$major/main/pg_hba.conf
 if ! grep -qE '^local[[:space:]]+all[[:space:]]+bench[[:space:]]+trust' "$hba"; then
     sed -i '1i local   all             bench                                   trust' "$hba"
 fi
+# spec/20 section 20.4 reads io.stat in the cgroup of the server. systemd turns on the io controller for a unit only with IOAccounting=yes.
+dropin=/etc/systemd/system/postgresql@$major-main.service.d
+mkdir -p "$dropin"
+printf '[Service]\nCPUAccounting=yes\nMemoryAccounting=yes\nIOAccounting=yes\n' >"$dropin/rupg-bench.conf"
 systemctl daemon-reload
 systemctl restart "postgresql@$major-main"
 if [ "$(sudo -u postgres psql -Atc "SELECT count(*) FROM pg_roles WHERE rolname = 'bench'")" = 0 ]; then
