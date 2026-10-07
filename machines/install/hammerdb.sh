@@ -24,7 +24,10 @@ if [ ! -x "$dir/hammerdbcli" ] || [ "$(cat "$dir/VERSION" 2>/dev/null)" != "$ver
 fi
 [ -x "$dir/hammerdbcli" ] || die "$dir has no hammerdbcli"
 # librarycheck prints whether HammerDB can load libpq. hammerdbcli waits for more input at the end of stdin, so the input ends with exit.
-check=$(cd "$dir" && printf 'librarycheck\nexit\n' | timeout 120 ./hammerdbcli 2>&1 | grep -A1 'library for PostgreSQL' || true)
+check=$(
+    cd "$dir" || exit 1
+    printf 'librarycheck\nexit\n' | timeout 120 ./hammerdbcli 2>&1 | grep -A1 'library for PostgreSQL'
+) || true
 case $check in
 *Success*) ;;
 *) die "HammerDB cannot load libpq: $check" ;;

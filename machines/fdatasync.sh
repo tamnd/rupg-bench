@@ -6,7 +6,9 @@ set -euo pipefail
 # shellcheck source=machines/lib.sh
 . "$(dirname "$0")/lib.sh"
 
-[ $# -ge 1 ] && [ $# -le 2 ] || die "usage: fdatasync.sh DIR [SIZE]"
+if [ $# -lt 1 ] || [ $# -gt 2 ]; then
+    die "usage: fdatasync.sh DIR [SIZE]"
+fi
 dir=$1
 size=${2:-256m}
 [ -d "$dir" ] || die "$dir is not a directory"
