@@ -5,7 +5,7 @@
 //! It supports the `trust` and `password` methods of `pg_hba.conf`. The machine scripts set `trust` for the benchmark user on the local host. Values are sent and received as text.
 
 use std::fmt;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::net::TcpStream;
 use std::os::unix::net::UnixStream;
 
@@ -237,6 +237,88 @@ impl Conn {
                     return Err(client_error(format!("unexpected message {:?}", other as char)));
                 }
             }
+        }
+    }
+
+    /// Runs `COPY ... FROM STDIN` and sends the lines of `input`. When `strip` is set, a line that ends with that byte loses it, as the `|` at the end of each line of a TPC-H `.tbl` file. It returns the command tag, for example `COPY 6001215`.
+    pub(crate) fn copy_in(
+        &mut self,
+        sql: &str,
+        input: &mut dyn BufRead,
+        strip: Option<u8>,
+    ) -> Result<String, PgError> {
+        let mut m = Vec::new();
+        cstr(&mut m, sql);
+        self.send(b'Q', &m)?;
+        self.writer.flush()?;
+        let mut err = None;
+        loop {
+            let (tag, msg) = self.read_message()?;
+            match tag {
+                b'G' => break,
+                b'E' => err = Some(parse_error(&msg)),
+                b'Z' => {
+                    return Err(err.unwrap_or(client_error("the statement did not start a COPY")));
+                }
+                b'N' | b'S' => {}
+                other => {
+                    return Err(client_error(format!("unexpected message {:?}", other as char)));
+                }
+            }
+        }
+        let mut chunk = Vec::with_capacity(1 << 17);
+        let mut line = Vec::new();
+        let mut failed = None;
+        loop {
+            line.clear();
+            match input.read_until(b'\n', &mut line) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(e) => {
+                    failed = Some(e.to_string());
+                    break;
+                }
+            }
+            let mut body = line.strip_suffix(b"\n").unwrap_or(&line);
+            body = body.strip_suffix(b"\r").unwrap_or(body);
+            if let Some(b) = strip {
+                body = body.strip_suffix(&[b]).unwrap_or(body);
+            }
+            chunk.extend_from_slice(body);
+            chunk.push(b'\n');
+            if chunk.len() >= 1 << 16 {
+                self.send(b'd', &chunk)?;
+                chunk.clear();
+            }
+        }
+        if let Some(e) = &failed {
+            let mut m = Vec::new();
+            cstr(&mut m, e);
+            self.send(b'f', &m)?;
+        } else {
+            if !chunk.is_empty() {
+                self.send(b'd', &chunk)?;
+            }
+            self.send(b'c', &[])?;
+        }
+        self.writer.flush()?;
+        let mut tag_text = String::new();
+        loop {
+            let (tag, msg) = self.read_message()?;
+            match tag {
+                b'C' => tag_text = cstring_at(&msg, 0)?.0,
+                b'E' => err = Some(parse_error(&msg)),
+                b'Z' => break,
+                b'N' | b'S' => {}
+                other => {
+                    return Err(client_error(format!("unexpected message {:?}", other as char)));
+                }
+            }
+        }
+        match (failed, err) {
+            (Some(e), _) => Err(client_error(format!("reading the input: {e}"))),
+            (None, Some(e)) => Err(e),
+            (None, None) => Ok(tag_text),
         }
     }
 

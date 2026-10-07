@@ -49,6 +49,8 @@ systemctl restart "postgresql@$major-main"
 if [ "$(sudo -u postgres psql -Atc "SELECT count(*) FROM pg_roles WHERE rolname = 'bench'")" = 0 ]; then
     sudo -u postgres psql -qc 'CREATE ROLE bench LOGIN; GRANT pg_read_server_files TO bench'
 fi
+# The loaders run CHECKPOINT after a load, and that needs pg_checkpoint.
+sudo -u postgres psql -qc 'GRANT pg_checkpoint TO bench'
 if [ "$(sudo -u postgres psql -Atc "SELECT count(*) FROM pg_database WHERE datname = 'bench'")" = 0 ]; then
     sudo -u postgres createdb -O bench bench
 fi
