@@ -44,6 +44,7 @@ note = "spec/03 names 2.0.0, which is planned for 21 October 2026. 1.5.6 is the 
 [umbra]
 version = "26.09"
 image = "umbradb/umbra:26.09"
+digest = "sha256:f00ec4274ed71f32dcd479cc6b5fc850d3763c9e0333bb26ba58f5ba1ae194fc"
 date = "2026-09-18"
 license = "unverified"
 note = "The image that the ClickBench pin pulls. A row is published only when the license permits a published comparison."

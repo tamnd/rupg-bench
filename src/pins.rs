@@ -12,7 +12,7 @@ const REQUIRED: [(&str, &[&str]); 11] = [
     ("rupg", &["repo", "commit"]),
     ("clickhouse", &["version", "url", "sha256"]),
     ("duckdb", &["version", "url", "sha256"]),
-    ("umbra", &["version", "image", "license"]),
+    ("umbra", &["version", "image", "digest", "license"]),
     ("cedardb", &["version", "license"]),
     ("sqlite", &["version", "url", "sha3_256"]),
     ("hammerdb", &["version", "url", "sha256"]),
@@ -50,6 +50,18 @@ impl Pins {
                 {
                     return Err(format!("[{}] {key} is not 64 hex digits", table.name));
                 }
+            }
+            // A container image digest, as docker prints it.
+            if let Some(d) = table.str("digest")
+                && !d.strip_prefix("sha256:").is_some_and(|h| {
+                    h.len() == 64
+                        && h.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                })
+            {
+                return Err(format!(
+                    "[{}] digest {d:?} is not sha256: and 64 hex digits",
+                    table.name
+                ));
             }
         }
         Ok(Pins { doc })
@@ -137,6 +149,8 @@ mod tests {
         assert!(Pins::parse(&short).unwrap_err().contains("full SHA-1"));
         let no_duckdb = FILE.replace("[duckdb]", "[duck]");
         assert!(Pins::parse(&no_duckdb).unwrap_err().contains("[duckdb]"));
+        let tag = FILE.replace("digest = \"sha256:", "digest = \"");
+        assert!(Pins::parse(&tag).unwrap_err().contains("[umbra] digest"));
     }
 
     #[test]
