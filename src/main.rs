@@ -17,6 +17,8 @@ mod cgroup;
 mod gates;
 mod json;
 mod load;
+mod pg;
+mod pgbench;
 mod pins;
 mod report;
 mod toml;
@@ -44,6 +46,11 @@ commands:
                               compare two answer sets as multisets of rows (spec/20 section 20.5).
                               PATH is a file or a directory of <query>.tsv files. An expected file
                               <query>.out is a TPC-H answer file and is compared with the rules of TPC-H clause 2.1.3.5.
+  pgbench (--unit UNIT | --attach PATH) [--conn WORDS] [--bin DIR] [--scale N] [--clients N] [--jobs N] [--time SECONDS] [--smoke] [--json]
+                              run pgbench -i and the TPC-B like script against the server, measure the server cgroup
+                              with the idle base, and run the consistency check of spec/21 section 21.4.6.
+                              --conn takes libpq words: host, port, user, dbname, password.
+                              --smoke marks the result as a smoke run, which is not a baseline.
   --version                   print the version";
 
 fn main() -> ExitCode {
@@ -87,6 +94,7 @@ fn run(argv: &[String]) -> Result<(), String> {
         "load" => load_command(a)?,
         "report" => report_command(a)?,
         "answers" => answers_command(a)?,
+        "pgbench" => pgbench_command(a)?,
         "--version" | "-V" => println!("rupg-bench {}", env!("CARGO_PKG_VERSION")),
         "--help" | "-h" | "help" => println!("{USAGE}"),
         other => return Err(format!("usage: unknown command {other:?}\n{USAGE}")),
@@ -330,4 +338,107 @@ fn answers_command(mut a: args::Args) -> Result<(), String> {
         }
     }
     if wrong > 0 { Err(format!("{wrong} of {} answers are wrong", pairs.len())) } else { Ok(()) }
+}
+
+/// A number option with a default.
+fn number<T: std::str::FromStr>(a: &mut args::Args, name: &str, default: T) -> Result<T, String> {
+    match a.value(name) {
+        None => Ok(default),
+        Some(v) => v.parse().map_err(|_| format!("usage: --{name} {v:?} is not a number")),
+    }
+}
+
+/// The `pgbench` command: the pgbench run and its consistency check of spec/21 section 21.4.6.
+fn pgbench_command(mut a: args::Args) -> Result<(), String> {
+    let conn = pg::Config::parse(&a.value("conn").unwrap_or_default())?;
+    let bin = a.value("bin").unwrap_or_else(|| "/usr/lib/postgresql/19/bin".to_owned());
+    let scale: u32 = number(&mut a, "scale", 1)?;
+    let clients: u32 = number(&mut a, "clients", 4)?;
+    let jobs: u32 = number(&mut a, "jobs", clients.min(4))?;
+    let time: u32 = number(&mut a, "time", 60)?;
+    let smoke = a.flag("smoke");
+    let json = a.flag("json");
+    if a.value_is_set("name") {
+        return Err(
+            "usage: pgbench measures a running server, so give --unit or --attach".to_owned()
+        );
+    }
+    let cg = target(&mut a)?;
+    a.finish()?;
+    let bin = Path::new(&bin);
+    with_cgroup(cg, json, |cg, out| {
+        out.add("suite", "pgbench", "suite           pgbench\n");
+        let note = if smoke {
+            "smoke run: it shows that the driver works, it is not a baseline\n"
+        } else {
+            ""
+        };
+        out.add("smoke", smoke, note);
+        let version = pgbench::output({
+            let mut c = std::process::Command::new(bin.join("pgbench"));
+            c.arg("--version");
+            c
+        })?;
+        out.add(
+            "pgbench_version",
+            version.trim(),
+            &format!("pgbench         {}\n", version.trim()),
+        );
+        let settings = Json::obj()
+            .with("scale", scale)
+            .with("clients", clients)
+            .with("jobs", jobs)
+            .with("time_s", time);
+        out.add(
+            "settings",
+            settings,
+            &format!(
+                "settings        scale {scale}, {clients} clients, {jobs} threads, {time} s\n"
+            ),
+        );
+
+        let mut init = pgbench::command(bin, &conn);
+        init.args(["-i", "-q", "-s", &scale.to_string()]);
+        pgbench::output(init)?;
+        let mut db = pg::Conn::connect(&conn)?;
+        let server = db.server_version.clone();
+        out.add("server_version", server.as_str(), &format!("server          {server}\n"));
+
+        let base = cgroup::idle_base(cg, cgroup::IDLE_BASE)?;
+        out.add("idle_base", base.to_json(), &format!("idle base over 10 s:\n{}", base.text()));
+
+        let mut run = pgbench::command(bin, &conn);
+        run.args(["-c", &clients.to_string(), "-j", &jobs.to_string(), "-T", &time.to_string()]);
+        let interval = cgroup::Interval::start(cg)?;
+        let printed = pgbench::output(run);
+        let usage = interval.finish()?;
+        let printed = printed?;
+        let summary = pgbench::parse_summary(&printed)?;
+        let sj = Json::obj()
+            .with("transactions", summary.transactions)
+            .with("failed", summary.failed)
+            .with("latency_average_ms", summary.latency_ms)
+            .with("tps", summary.tps)
+            .with("output", printed.as_str());
+        out.add("pgbench", sj, &format!("pgbench output:\n{printed}"));
+        out.add("run", usage.to_json(), &format!("server over the run:\n{}", usage.text()));
+
+        let check = pgbench::Check::read(&mut db, summary.transactions)?;
+        let failures = check.failures();
+        let text = format!(
+            "check           sum(abalance) {}, sum(tbalance) {}, sum(bbalance) {}, history rows {}, transactions {}: {}\n",
+            check.abalance,
+            check.tbalance,
+            check.bbalance,
+            check.history,
+            check.transactions,
+            if failures.is_empty() { "passed" } else { "FAILED" }
+        );
+        out.add("check", check.to_json(), &text);
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("wrong answer, the run is not a number: {}", failures.join("; ")))
+        }
+    })
 }
