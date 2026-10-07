@@ -1,6 +1,6 @@
 //! A small client for the PostgreSQL wire protocol, version 3.0.
 //!
-//! The drivers read their checks through this client, and the drivers for TPC-C with statements and YCSB will send their statements through it. spec/20 section 20.9 names `libpq`. The harness has no dependencies and no unsafe code, so this module speaks the protocol itself. This first part has the start of a connection and the simple query protocol.
+//! The drivers read their checks through this client, and the YCSB driver sends its statements through it. spec/20 section 20.9 names `libpq`. The harness has no dependencies and no unsafe code, so this module speaks the protocol itself. It has the start of a connection, the simple query protocol, `COPY FROM STDIN`, and prepared statements of the extended protocol with the pipeline of `libpq`.
 //!
 //! It supports the `trust` and `password` methods of `pg_hba.conf`. The machine scripts set `trust` for the benchmark user on the local host. Values are sent and received as text.
 
@@ -92,6 +92,15 @@ pub(crate) struct Rows {
     pub(crate) columns: Vec<String>,
     pub(crate) rows: Vec<Vec<Option<String>>>,
     /// The command tag, for example `INSERT 0 1` or `SELECT 3`.
+    pub(crate) tag: String,
+}
+
+/// The result of one statement of `Conn::queue`: the row count, the field count and the first value of the last row, and the command tag. The other values are not kept.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Done {
+    pub(crate) rows: u64,
+    pub(crate) fields: u16,
+    pub(crate) first: Option<Vec<u8>>,
     pub(crate) tag: String,
 }
 
@@ -327,6 +336,81 @@ impl Conn {
         self.simple(sql)?.pop().ok_or(client_error("the statement returned nothing"))
     }
 
+    /// Makes the prepared statement `name` with the extended protocol. The parameters are text and the server finds their types.
+    pub(crate) fn prepare(&mut self, name: &str, sql: &str) -> Result<(), PgError> {
+        let mut m = Vec::new();
+        cstr(&mut m, name);
+        cstr(&mut m, sql);
+        m.extend_from_slice(&0u16.to_be_bytes());
+        self.send(b'P', &m)?;
+        self.send(b'S', &[])?;
+        self.writer.flush()?;
+        let mut err = None;
+        loop {
+            let (tag, msg) = self.read_message()?;
+            match tag {
+                b'1' | b'N' | b'S' => {}
+                b'E' => err = Some(parse_error(&msg)),
+                b'Z' => return err.map_or(Ok(()), Err),
+                other => {
+                    return Err(client_error(format!("unexpected message {:?}", other as char)));
+                }
+            }
+        }
+    }
+
+    /// Puts Bind, Execute and Sync for the prepared statement `name` in the send buffer, with text parameters. Each statement has its own Sync, so it is its own transaction, as with the simple protocol. The statement goes to the server when the buffer is full or at `flush`. More than one statement can wait for its result, as in the pipeline mode of `libpq` with `PQpipelineSync` after each statement.
+    pub(crate) fn queue(&mut self, name: &str, params: &[&[u8]]) -> Result<(), PgError> {
+        let n = u16::try_from(params.len()).map_err(|_| client_error("too many parameters"))?;
+        let mut m = Vec::with_capacity(32 + params.iter().map(|p| p.len() + 4).sum::<usize>());
+        // The unnamed portal, the statement, no format codes (all text), the parameters, no result format codes (all text).
+        m.push(0);
+        cstr(&mut m, name);
+        m.extend_from_slice(&0u16.to_be_bytes());
+        m.extend_from_slice(&n.to_be_bytes());
+        for p in params {
+            let len =
+                i32::try_from(p.len()).map_err(|_| client_error("a parameter is too long"))?;
+            m.extend_from_slice(&len.to_be_bytes());
+            m.extend_from_slice(p);
+        }
+        m.extend_from_slice(&0u16.to_be_bytes());
+        self.send(b'B', &m)?;
+        // The unnamed portal, all rows.
+        self.send(b'E', &[0, 0, 0, 0, 0])?;
+        self.send(b'S', &[])?;
+        Ok(())
+    }
+
+    /// Sends the statements in the send buffer.
+    pub(crate) fn flush(&mut self) -> Result<(), PgError> {
+        self.writer.flush()?;
+        Ok(())
+    }
+
+    /// Reads the result of the oldest statement of `queue` that has no result yet. The outer error is a failure of the connection. The inner error is an error that the server sent for the statement.
+    pub(crate) fn next_done(&mut self) -> Result<Result<Done, PgError>, PgError> {
+        let mut done = Done::default();
+        let mut err = None;
+        loop {
+            let (tag, msg) = self.read_message()?;
+            match tag {
+                b'2' | b'n' | b'N' | b'S' => {}
+                b'D' => {
+                    done.rows += 1;
+                    done.fields = be16(&msg, 0)?;
+                    done.first = first_value(&msg)?;
+                }
+                b'C' => done.tag = cstring_at(&msg, 0)?.0,
+                b'E' => err = Some(parse_error(&msg)),
+                b'Z' => return Ok(err.map_or(Ok(done), Err)),
+                other => {
+                    return Err(client_error(format!("unexpected message {:?}", other as char)));
+                }
+            }
+        }
+    }
+
     fn send(&mut self, tag: u8, body: &[u8]) -> Result<(), PgError> {
         let len =
             u32::try_from(body.len() + 4).map_err(|_| client_error("a message is too long"))?;
@@ -413,6 +497,19 @@ fn parse_data_row(b: &[u8]) -> Result<Vec<Option<String>>, PgError> {
     Ok(out)
 }
 
+/// The first value of a data row, None for NULL or for a row with no values.
+fn first_value(b: &[u8]) -> Result<Option<Vec<u8>>, PgError> {
+    if be16(b, 0)? == 0 {
+        return Ok(None);
+    }
+    let len = be32(b, 2)? as i32;
+    if len < 0 {
+        return Ok(None);
+    }
+    let v = b.get(6..6 + len as usize).ok_or(client_error("a short data row"))?;
+    Ok(Some(v.to_vec()))
+}
+
 fn parse_error(b: &[u8]) -> PgError {
     let mut code = String::new();
     let mut message = String::new();
@@ -482,5 +579,17 @@ mod tests {
         b.push(0);
         let e = parse_error(&b);
         assert_eq!(e.to_string(), "40001: could not serialize access");
+    }
+
+    #[test]
+    fn first_value_of_a_row() {
+        let mut b = Vec::new();
+        b.extend_from_slice(&2u16.to_be_bytes());
+        b.extend_from_slice(&5i32.to_be_bytes());
+        b.extend_from_slice(b"user1");
+        b.extend_from_slice(&(-1i32).to_be_bytes());
+        assert_eq!(first_value(&b).unwrap(), Some(b"user1".to_vec()));
+        assert_eq!(first_value(&0u16.to_be_bytes()).unwrap(), None);
+        assert!(first_value(&b[..7]).is_err());
     }
 }

@@ -25,6 +25,7 @@ mod report;
 mod suite;
 mod toml;
 mod tpch;
+mod ycsb;
 
 const USAGE: &str = "usage: rupg-bench <command> [options]
 
@@ -72,6 +73,13 @@ commands:
                               qgen -d to DATA/queries. load loads the .tbl files with the keys of the specification. run runs
                               each query --runs times (3), the first run cold, and checks the answers against --answers
                               (the .out files of the kit at SF1, or .tsv files).
+  ycsb (--unit UNIT | --attach PATH) [--engine NAME] [--conn WORDS] [--records N] [--steps load,run] [--workloads a,b,c,f]
+          [--rows 1,16,16x64] [--time SECONDS] [--sync on|off] [--seed N] [--smoke] [--json] [--report DIR [--machine M]]
+                              the YCSB driver of spec/20 section 20.9: the core workloads A, B, C and F with the scrambled
+                              zipfian distribution (0.99). load makes usertable with --records rows (100,000). run runs each
+                              workload for each row of --rows for --time seconds (60). A row is CLIENTS, or CLIENTSxDEPTH
+                              for a pipeline of DEPTH statements on each connection. --sync sets synchronous_commit on each
+                              connection. The server cgroup is measured over each run, with the idle base first.
   --version                   print the version";
 
 fn main() -> ExitCode {
@@ -118,6 +126,7 @@ fn run(argv: &[String]) -> Result<(), String> {
         "instructions" => instructions_command(a)?,
         "tpch" => tpch_command(a)?,
         "pgbench" => pgbench_command(a)?,
+        "ycsb" => ycsb_command(a)?,
         "--version" | "-V" => println!("rupg-bench {}", env!("CARGO_PKG_VERSION")),
         "--help" | "-h" | "help" => println!("{USAGE}"),
         other => return Err(format!("usage: unknown command {other:?}\n{USAGE}")),
@@ -960,4 +969,249 @@ fn finish_suite(
         return Err(format!("wrong answer: {} of {} queries", t.wrong, t.checked));
     }
     Ok(())
+}
+
+/// The `ycsb` command.
+fn ycsb_command(mut a: args::Args) -> Result<(), String> {
+    let engine = a.value("engine").unwrap_or_else(|| "postgresql".to_owned());
+    if !engine.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err(format!(
+            "usage: the engine name {engine:?} may have only letters, digits, _ and -"
+        ));
+    }
+    let conn = pg::Config::parse(
+        &a.value("conn").unwrap_or_else(|| "user=bench dbname=bench".to_owned()),
+    )?;
+    let records: u64 = number(&mut a, "records", 100_000)?;
+    if records == 0 {
+        return Err("usage: --records must be at least 1".to_owned());
+    }
+    let steps = a.value("steps").unwrap_or_else(|| "load,run".to_owned());
+    let steps: Vec<&str> = steps.split(',').collect();
+    if let Some(bad) = steps.iter().find(|s| !["load", "run"].contains(s)) {
+        return Err(format!("usage: unknown step {bad:?}, the steps are load and run"));
+    }
+    let workloads = a.value("workloads").unwrap_or_else(|| "a,b,c,f".to_owned());
+    let workloads =
+        workloads.split(',').map(ycsb::Workload::get).collect::<Result<Vec<_>, String>>()?;
+    let rows = a.value("rows").unwrap_or_else(|| "1,16,16x64".to_owned());
+    let rows = rows.split(',').map(ycsb::Shape::parse).collect::<Result<Vec<_>, String>>()?;
+    let time: u64 = number(&mut a, "time", 60)?;
+    let sync = a.value("sync");
+    if let Some(v) = &sync
+        && v != "on"
+        && v != "off"
+    {
+        return Err(format!("usage: --sync {v:?}: give on or off"));
+    }
+    let seed: u64 = number(&mut a, "seed", 1)?;
+    let smoke = a.flag("smoke");
+    let json = a.flag("json");
+    let report_dir = a.value("report");
+    let machine = a.value("machine");
+    if a.value_is_set("name") {
+        return Err("usage: a server runs in its own cgroup, so give --unit or --attach".to_owned());
+    }
+    let cg = target(&mut a)?;
+    a.finish()?;
+    let say = |line: &str| {
+        if !json {
+            println!("{line}");
+        }
+    };
+    let meta = report::Meta::now(&format!("ycsb-{engine}"), machine, None, smoke);
+    let mut result = meta.to_json();
+    if smoke {
+        result =
+            result.with("note", "smoke run: it shows that the driver works, it is not a baseline");
+    }
+    result = result
+        .with("engine_name", engine.as_str())
+        .with("cgroup", cg.path.display().to_string())
+        .with("records", records)
+        .with("field_count", ycsb::FIELDS)
+        .with("field_length", ycsb::FIELD_LENGTH)
+        .with("distribution", "scrambled zipfian, constant 0.99")
+        .with("time_s", time)
+        .with("seed", seed)
+        .with(
+            "kernel",
+            std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default().trim(),
+        );
+    let settings = (records, time, seed, sync);
+    let outcome = ycsb_steps(&cg, &conn, &steps, &workloads, &rows, settings, &mut result, &say);
+    if let Err(e) = &outcome {
+        result = result.with("error", e.as_str());
+    }
+    if let Some(dir) = &report_dir {
+        let (md, js) = report::write(Path::new(dir), &result)?;
+        say(&format!("report   {}\n         {}", md.display(), js.display()));
+    }
+    if json {
+        print!("{}", result.pretty());
+    }
+    let removed = cg.remove();
+    outcome.and(removed)
+}
+
+/// The steps of the `ycsb` command. They add their numbers to `result`.
+#[allow(clippy::too_many_arguments)]
+fn ycsb_steps(
+    cg: &Cgroup,
+    conn: &pg::Config,
+    steps: &[&str],
+    workloads: &[ycsb::Workload],
+    rows: &[ycsb::Shape],
+    (records, time, seed, sync): (u64, u64, u64, Option<String>),
+    result: &mut Json,
+    say: &dyn Fn(&str),
+) -> Result<(), String> {
+    let add = |result: &mut Json, key: &str, value: Json| {
+        *result = std::mem::replace(result, Json::Null).with(key, value);
+    };
+    let mut db = pg::Conn::connect(conn)?;
+    add(result, "server_version", db.server_version.as_str().into());
+    let setting = |db: &mut pg::Conn, name: &str| -> Result<String, String> {
+        let r = db.query(&format!("SHOW {name}"))?;
+        Ok(r.rows.first().and_then(|r| r.first()).cloned().flatten().unwrap_or_default())
+    };
+    let server_sync = setting(&mut db, "synchronous_commit")?;
+    let used_sync = sync.clone().unwrap_or(server_sync.clone());
+    add(
+        result,
+        "synchronous_commit",
+        Json::obj()
+            .with("server", server_sync.as_str())
+            .with("run", used_sync.as_str())
+            .with("set_by_driver", sync.is_some()),
+    );
+    say(&format!("server   {}, synchronous_commit {used_sync}", db.server_version));
+    if steps.contains(&"load") {
+        let interval = cgroup::Interval::start(cg)?;
+        let started = std::time::Instant::now();
+        let loaded = ycsb::load(&mut db, records, seed);
+        let secs = started.elapsed().as_secs_f64();
+        let usage = interval.finish()?;
+        let n = loaded?;
+        say(&format!("load     {n} records in {secs:.1} s"));
+        add(
+            result,
+            "load",
+            Json::obj()
+                .with("records", n)
+                .with("secs", (secs * 1000.0).round() / 1000.0)
+                .with("statements", "CREATE TABLE, COPY FROM STDIN, VACUUM ANALYZE, CHECKPOINT")
+                .with("server", usage.to_json()),
+        );
+    }
+    if !steps.contains(&"run") {
+        return Ok(());
+    }
+    let have = ycsb::count(&mut db)?;
+    if have != records {
+        return Err(format!(
+            "usertable has {have} rows, not --records {records}. Run the load step"
+        ));
+    }
+    let base = cgroup::idle_base(cg, cgroup::IDLE_BASE)?;
+    add(result, "idle_base", base.to_json());
+    let mut out = Vec::new();
+    let mut failures = Vec::new();
+    let mut row_number = 0;
+    for w in workloads {
+        for shape in rows {
+            row_number += 1;
+            let s = ycsb::RunSettings {
+                workload: *w,
+                shape: *shape,
+                records,
+                time: Duration::from_secs(time),
+                seed,
+                row: row_number,
+                sync: sync.clone(),
+            };
+            let (mut tally, usage) = ycsb::run(conn, &s, cg)?;
+            let check = ycsb::check_final(&mut db, std::mem::take(&mut tally.writes))?;
+            let ops = tally.ops();
+            let secs = tally.elapsed.as_secs_f64();
+            let throughput = if secs > 0.0 { ops as f64 / secs } else { 0.0 };
+            let cpu_per_op = (ops > 0).then(|| usage.cpu_usec as f64 / ops as f64);
+            let mut row = Json::obj()
+                .with("workload", w.name.to_string())
+                .with("clients", shape.clients)
+                .with("pipeline", shape.depth)
+                .with("ops", ops)
+                .with("secs", (secs * 1000.0).round() / 1000.0)
+                .with("ops_per_s", throughput.round())
+                .with("errors", tally.errors)
+                .with("first_error", tally.first_error.clone())
+                .with("server_cpu_usec_per_op", cpu_per_op.map(|v| (v * 10.0).round() / 10.0))
+                .with("server_memory_peak", usage.memory_peak);
+            for (op, name) in ycsb::OPS {
+                let h = &tally.latency[op as usize];
+                if h.count() > 0 {
+                    row = row.with(name, h.to_json());
+                }
+            }
+            if w.update > 0.0 || w.rmw > 0.0 {
+                let hot = ycsb::ScrambledZipfian::new(records).hottest();
+                row = row.with(
+                    "hottest_key",
+                    Json::obj()
+                        .with("key", ycsb::key_name(hot))
+                        .with("updates", tally.hot_updates)
+                        .with(
+                            "updates_per_s",
+                            (tally.hot_updates as f64 / secs * 10.0).round() / 10.0,
+                        ),
+                );
+            }
+            row = row.with("server", usage.to_json()).with("check", check.to_json());
+            let p99 = |op: ycsb::Op| {
+                tally.latency[op as usize]
+                    .quantile(0.99)
+                    .map_or("-".to_owned(), |n| format!("{:.0}", n as f64 / 1000.0))
+            };
+            say(&format!(
+                "{} {:<22} {:>10.0} ops/s  read p99 {} us  update p99 {} us  rmw p99 {} us  cpu {} us/op  errors {}",
+                w.name,
+                shape.name(),
+                throughput,
+                p99(ycsb::Op::Read),
+                p99(ycsb::Op::Update),
+                p99(ycsb::Op::Rmw),
+                cpu_per_op.map_or("-".to_owned(), |v| format!("{v:.1}")),
+                tally.errors
+            ));
+            say(&format!(
+                "  check: {} acknowledged updates, {} fields checked, {} wrong",
+                check.writes, check.fields, check.bad
+            ));
+            if check.bad > 0 {
+                failures.push(format!(
+                    "workload {} with {}: {} fields do not hold their last acknowledged update: {}",
+                    w.name,
+                    shape.name(),
+                    check.bad,
+                    check.examples.join("; ")
+                ));
+            }
+            if tally.errors > 0 {
+                failures.push(format!(
+                    "workload {} with {}: {} errors, the first: {}",
+                    w.name,
+                    shape.name(),
+                    tally.errors,
+                    tally.first_error.unwrap_or_default()
+                ));
+            }
+            out.push(row);
+        }
+    }
+    add(result, "rows", out.into());
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("wrong answers, the rows are not numbers: {}", failures.join("; ")))
+    }
 }
