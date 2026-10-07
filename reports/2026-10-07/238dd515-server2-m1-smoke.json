@@ -1,0 +1,51 @@
+{
+  "suite": "m1",
+  "machine": "server2",
+  "date": "2026-10-07",
+  "commit": "238dd515",
+  "smoke": true,
+  "rupg_commit": "238dd515594a39e198c40375cf4236a282390753",
+  "rupg_version": "0.0.10",
+  "cores": 6,
+  "os": "linux",
+  "kernel": "6.8.0-136-generic",
+  "dir": "run",
+  "empty": {
+    "file_bytes": 83935232,
+    "allocated_bytes": 307200
+  },
+  "latency": {
+    "warmup": 1000,
+    "commits": 10000,
+    "value_bytes": 100,
+    "latency": {
+      "p50_us": 2028.8569999999997,
+      "p90_us": 3365.191,
+      "p99_us": 6218.5380000000005,
+      "p999_us": 13762.019,
+      "max_us": 46800.628,
+      "mean_us": 2271.061970200002
+    }
+  },
+  "throughput": {
+    "writers": 6,
+    "seconds": 30.011143316,
+    "commits": 37237,
+    "commits_per_second": 1240.7724560146178,
+    "writer_min": 6181,
+    "writer_max": 6219
+  },
+  "recovery": {
+    "rows": 256,
+    "value_bytes": 2000,
+    "rounds": 2098,
+    "row_bytes_written": 1074176000,
+    "log_blocks": 2098,
+    "log_bytes": 1078036320,
+    "file_bytes": 1526775808,
+    "fill_seconds": 16.172203874,
+    "page_cache_dropped": true,
+    "open_seconds": 4.086646529,
+    "replay_gib_per_second": 0.2456781015795545
+  }
+}
