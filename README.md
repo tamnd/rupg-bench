@@ -12,7 +12,7 @@ The procedure is [`spec/20-benchmarks.md`](https://github.com/tamnd/rupg/blob/ma
 
 ## Status
 
-Early. The crate builds and CI is green, but no suite runs yet. `rupg-bench gates` prints the twelve gates of spec/02 section 2.10, and `rupg-bench pins` prints the pinned versions. The first milestone, M0, builds the harness and measures every baseline that a later gate uses. Every command below is the planned interface from the spec.
+Early. The crate builds and CI is green, but no suite runs yet. `rupg-bench gates` prints the twelve gates of spec/02 section 2.10, `rupg-bench pins` prints the pinned versions, and `rupg-bench measure` runs the cgroup v2 runner. The first milestone, M0, builds the harness and measures every baseline that a later gate uses. Every command below is the planned interface from the spec.
 
 ## The gates
 
@@ -89,6 +89,13 @@ cargo run --release -- report
 ```
 
 Each suite runs every system in its own cgroup v2 and reads `memory.peak`, `memory.stat`, `Pss`, `usage_usec`, `io.stat` and the bytes at rest, with an idle base over 10 s before each suite.
+
+`rupg-bench measure` is this runner. With `--name` it starts a command in the new cgroup `/sys/fs/cgroup/rupg-bench/<name>`. With `--attach PATH` or `--unit UNIT` it measures a cgroup that exists, for example the cgroup of `postgresql@19-main.service`, while the client command runs outside it. `--idle` measures the idle base first, and `--du PATH` adds the bytes at rest. Before Linux 6.12 the kernel cannot reset `memory.peak`, so the peak counts from the creation of the cgroup, and the result says so. A driver then starts the system in a new cgroup for each suite.
+
+```sh
+rupg-bench measure --name duckdb --cpus 0-15 --du hits.db -- duckdb hits.db -c "SELECT count(*) FROM hits"
+rupg-bench measure --unit postgresql@19-main --idle --du /var/lib/postgresql/19/main --json -- psql -c "SELECT 1"
+```
 
 ## The reporting rules
 

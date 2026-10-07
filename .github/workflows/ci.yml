@@ -44,6 +44,8 @@ jobs:
         run: cargo clippy --all-targets --all-features
       - name: spelling
         uses: crate-ci/typos@7f9d0819ca1c008ade73f4b41fa9d258d48f605b # v1.51.1
+      - name: shellcheck
+        run: find machines -name '*.sh' -print0 | xargs -0 shellcheck -x
 
   test:
     name: test on ${{ matrix.os }}
