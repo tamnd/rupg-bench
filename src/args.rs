@@ -4,6 +4,8 @@
 #[derive(Debug, Default)]
 pub(crate) struct Args {
     options: Vec<(String, Option<String>)>,
+    /// The words after `--`, for example the command that `measure` runs.
+    pub(crate) rest: Vec<String>,
 }
 
 impl Args {
@@ -12,6 +14,10 @@ impl Args {
         let mut i = 0;
         while i < argv.len() {
             let word = &argv[i];
+            if word == "--" {
+                out.rest = argv[i + 1..].to_vec();
+                break;
+            }
             let Some(name) = word.strip_prefix("--") else {
                 return Err(format!("usage: {word:?} is not an option"));
             };
@@ -68,6 +74,14 @@ mod tests {
         assert_eq!(a.value("file").as_deref(), Some("p.toml"));
         assert!(a.flag("shell"));
         assert_eq!(a.value("n").as_deref(), Some("3"));
+        a.finish().unwrap();
+    }
+
+    #[test]
+    fn words_after_two_dashes_are_kept() {
+        let mut a = Args::parse(&words("--name q1 -- psql --no-psqlrc -c select")).unwrap();
+        assert_eq!(a.value("name").as_deref(), Some("q1"));
+        assert_eq!(a.rest, words("psql --no-psqlrc -c select"));
         a.finish().unwrap();
     }
 
