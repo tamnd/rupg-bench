@@ -11,12 +11,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::cgroup::Cgroup;
 use crate::json::Json;
 
+mod answers;
 mod args;
 mod cgroup;
 mod gates;
 mod json;
 mod load;
 mod pins;
+mod report;
 mod toml;
 
 const USAGE: &str = "usage: rupg-bench <command> [options]
@@ -34,6 +36,14 @@ commands:
                               run the steps of case A or case B of spec/20 section 20.3.1 on FILE
                               (drop_caches, fincore, the timed cat), then time COMMAND, the load,
                               in the cgroup runner. Case A records L, R and L / R.
+  report --result FILE [--out DIR] [--suite S] [--machine M] [--commit C] [--smoke]
+                              write DIR/<date>/<commit>-<machine>-<suite>.json and .md from a result file
+                              (the --json output of a command). The options fill the fields that the file lacks.
+                              --smoke marks the run as a smoke run, not a baseline. DIR is reports by default.
+  answers --expected PATH --actual PATH
+                              compare two answer sets as multisets of rows (spec/20 section 20.5).
+                              PATH is a file or a directory of <query>.tsv files. An expected file
+                              <query>.out is a TPC-H answer file and is compared with the rules of TPC-H clause 2.1.3.5.
   --version                   print the version";
 
 fn main() -> ExitCode {
@@ -75,6 +85,8 @@ fn run(argv: &[String]) -> Result<(), String> {
         }
         "measure" => measure(a)?,
         "load" => load_command(a)?,
+        "report" => report_command(a)?,
+        "answers" => answers_command(a)?,
         "--version" | "-V" => println!("rupg-bench {}", env!("CARGO_PKG_VERSION")),
         "--help" | "-h" | "help" => println!("{USAGE}"),
         other => return Err(format!("usage: unknown command {other:?}\n{USAGE}")),
@@ -235,4 +247,87 @@ fn load_command(mut a: args::Args) -> Result<(), String> {
         out.add("load_case", prepared.to_json(Some(usage.wall)), &prepared.text(usage.wall));
         out.du(du)
     })
+}
+
+/// The `report` command.
+fn report_command(mut a: args::Args) -> Result<(), String> {
+    let file = a.value("result").ok_or("usage: report needs --result FILE")?;
+    let out = a.value("out").unwrap_or_else(|| "reports".to_owned());
+    let suite = a.value("suite");
+    let machine = a.value("machine");
+    let commit = a.value("commit");
+    let smoke = a.flag("smoke");
+    a.finish()?;
+    let text = std::fs::read_to_string(&file).map_err(|e| format!("{file}: {e}"))?;
+    let mut result = Json::parse(&text).map_err(|e| format!("{file}: {e}"))?;
+    if report::Meta::from_json(&result).is_err() {
+        let suite = suite.ok_or(format!("usage: {file} has no suite, so give --suite"))?;
+        let meta = report::Meta::now(&suite, machine, commit, smoke);
+        let Json::Obj(entries) = result else { return Err(format!("{file} is not a JSON object")) };
+        let Json::Obj(mut head) = meta.to_json() else {
+            unreachable!("Meta::to_json is an object")
+        };
+        head.extend(entries.into_iter().filter(|(k, _)| {
+            !matches!(k.as_str(), "suite" | "machine" | "date" | "commit" | "smoke")
+        }));
+        result = Json::Obj(head);
+    } else if suite.is_some() || machine.is_some() || commit.is_some() || smoke {
+        return Err(format!(
+            "usage: {file} names its run already, so --suite, --machine, --commit and --smoke do not apply"
+        ));
+    }
+    let (md, json) = report::write(Path::new(&out), &result)?;
+    println!("{}\n{}", md.display(), json.display());
+    Ok(())
+}
+
+/// The `answers` command.
+fn answers_command(mut a: args::Args) -> Result<(), String> {
+    let expected = a.value("expected").ok_or("usage: answers needs --expected PATH")?;
+    let actual = a.value("actual").ok_or("usage: answers needs --actual PATH")?;
+    a.finish()?;
+    let (expected, actual) = (Path::new(&expected), Path::new(&actual));
+    let pairs: Vec<(std::path::PathBuf, std::path::PathBuf)> = if expected.is_dir() {
+        let mut files: Vec<_> = std::fs::read_dir(expected)
+            .map_err(|e| format!("{}: {e}", expected.display()))?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| matches!(p.extension().and_then(|x| x.to_str()), Some("tsv" | "out")))
+            .collect();
+        files.sort();
+        files
+            .into_iter()
+            .map(|e| {
+                let stem =
+                    e.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                (e, actual.join(format!("{stem}.tsv")))
+            })
+            .collect()
+    } else {
+        vec![(expected.to_path_buf(), actual.to_path_buf())]
+    };
+    if pairs.is_empty() {
+        return Err(format!("{} has no .tsv or .out file", expected.display()));
+    }
+    let mut wrong = 0;
+    for (e, act) in &pairs {
+        let read =
+            |p: &Path| std::fs::read_to_string(p).map_err(|err| format!("{}: {err}", p.display()));
+        let tpch = e.extension().is_some_and(|x| x == "out");
+        let verdict = (|| {
+            let want =
+                if tpch { answers::parse_tpch(&read(e)?)? } else { answers::parse_tsv(&read(e)?)? };
+            let got = answers::parse_tsv(&read(act)?)?;
+            let tol = if tpch { answers::Tolerance::Tpch } else { answers::RELATIVE };
+            answers::compare(&want, &got, tol).map(|()| want.rows.len())
+        })();
+        let name = e.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        match verdict {
+            Ok(rows) => println!("{name:<8} ok, {rows} rows"),
+            Err(err) => {
+                wrong += 1;
+                println!("{name:<8} WRONG: {err}");
+            }
+        }
+    }
+    if wrong > 0 { Err(format!("{wrong} of {} answers are wrong", pairs.len())) } else { Ok(()) }
 }
