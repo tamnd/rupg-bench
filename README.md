@@ -12,7 +12,7 @@ The procedure is [`spec/20-benchmarks.md`](https://github.com/tamnd/rupg/blob/ma
 
 ## Status
 
-Early. The crate builds and CI is green. ClickBench, TPC-H, TPC-C, YCSB and pgbench run, and the other suites do not run yet. `rupg-bench gates` prints the twelve gates of spec/02 section 2.10, `rupg-bench pins` prints the pinned versions, `rupg-bench measure` runs the cgroup v2 runner, `rupg-bench load` runs the load cases, `rupg-bench answers` checks answer sets, `rupg-bench report` writes the report files, `rupg-bench pgbench` runs the pgbench smoke run with its check, `rupg-bench instructions` counts the instructions of each query, `rupg-bench tpch` runs TPC-H, `rupg-bench ycsb` runs YCSB, `rupg-bench tpcc` runs TPC-C, and `rupg-bench clickbench` runs ClickBench. The first milestone, M0, builds the harness and measures every baseline that a later gate uses. Every command below is the planned interface from the spec.
+Early. The crate builds and CI is green. ClickBench, TPC-H, TPC-C, YCSB and pgbench run, and the other suites do not run yet. `rupg-bench gates` prints the twelve gates of spec/02 section 2.10, `rupg-bench pins` prints the pinned versions, `rupg-bench measure` runs the cgroup v2 runner, `rupg-bench load` runs the load cases, `rupg-bench answers` checks answer sets, `rupg-bench report` writes the report files, `rupg-bench pgbench` runs the pgbench smoke run with its check, `rupg-bench instructions` counts the instructions of each query, `rupg-bench tpch` runs TPC-H, `rupg-bench ycsb` runs YCSB, `rupg-bench tpcc` runs TPC-C, `rupg-bench clickbench` runs ClickBench, and `rupg-bench m1` gives the M1 numbers of rupg. The first milestone, M0, builds the harness and measures every baseline that a later gate uses. Every command below is the planned interface from the spec.
 
 ## The gates
 
@@ -156,6 +156,13 @@ rupg-bench tpcc --unit postgresql@19-main --warehouses 100 --vu 16 --rampup 5 --
 ```sh
 PGVERSION=19 rupg-bench clickbench --dir cb/postgresql --engine postgresql --unit postgresql@19-main --source hits.tsv --save-answers ans-pg
 rupg-bench clickbench --dir cb/duckdb --engine duckdb --source hits.parquet --duckdb-bin /opt/rupg-bench/bin/duckdb --answers ans-pg
+```
+
+`rupg-bench m1` gives the M1 numbers of spec/23 section 23.4. It links the `rupg` facade at the commit of `pins.toml` and runs in the process, with no server. A test checks that the commit in `Cargo.toml` and the commit in `pins.toml` are the same. The step `empty` makes a database with the default options and gives the size of the file and the bytes that the file system allocated. The step `latency` times commits of one row at one writer. The step `throughput` runs one writer for each core, each with its own table, for a fixed time. The step `recovery` starts `rupg-bench m1-fill` in a child process, which updates rows until 1 GiB of values is in the log and exits with no close. Then the driver drops the file from the page cache with `dd iflag=nocache` and times the open that replays the log. Each commit is durable when it returns.
+
+```sh
+rupg-bench m1 --dir run --machine server1 --report reports
+rupg-bench m1 --dir run --steps recovery --log-mib 512
 ```
 
 The report of a YCSB run with `--sync` has the setting in its name, as in `ycsb-postgresql-sync-on`, and the report of a TPC-C run has the warehouse count, as in `tpcc-postgresql-w100`. So the runs of one suite do not write the same file.

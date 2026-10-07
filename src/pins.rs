@@ -169,6 +169,6 @@ mod tests {
         let summary = pins.summary();
         assert_eq!(summary.lines().count(), pins.systems().count());
         assert!(summary.contains("postgresql   19beta4 at 7d3d2db7d"));
-        assert!(summary.contains("rupg         not pinned"));
+        assert!(summary.contains("rupg         238dd5155"));
     }
 }
