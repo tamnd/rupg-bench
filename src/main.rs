@@ -14,6 +14,7 @@ use crate::json::Json;
 mod answers;
 mod args;
 mod cgroup;
+mod clickbench;
 mod gates;
 mod instructions;
 mod json;
@@ -97,6 +98,14 @@ commands:
                               The conditions are also checked before the runs, and --steps check only checks them.
                               The roles come from machines/install/tpcc-roles.sh, which writes the password file
                               (/etc/rupg-bench/tpcc.pass). The sync bound uses the fdatasync p50 in --sync-dir (next to the data directory).
+  clickbench --dir DIR --engine NAME [--unit UNIT | --attach PATH | --cpus LIST] [--source FILE] [--steps load,run,concurrent]
+          [--lib FILE] [--conn WORDS | --duckdb-bin B] [--answers DIR] [--save-answers DIR] [--result-file FILE] [--smoke] [--json] [--report DIR [--machine M]]
+                              the ClickBench driver of spec/20 section 20.5. DIR is a system directory of the ClickBench pin.
+                              It runs ./load with --source, then each query of queries.sql as bench_run_query of the pin
+                              runs it, with true cold runs, then ./data-size, then bench_concurrent_qps of --lib
+                              (DIR/../lib/benchmark-common.sh). With --unit or --attach the server cgroup is measured,
+                              else each query runs in a new cgroup. The answers come from an unmeasured pass, through
+                              --conn (user=bench dbname=test) for a server or with duckdb on DIR/hits.db.
   --version                   print the version";
 
 fn main() -> ExitCode {
@@ -142,6 +151,7 @@ fn run(argv: &[String]) -> Result<(), String> {
         "answers" => answers_command(a)?,
         "instructions" => instructions_command(a)?,
         "tpch" => tpch_command(a)?,
+        "clickbench" => clickbench_command(a)?,
         "pgbench" => pgbench_command(a)?,
         "ycsb" => ycsb_command(a)?,
         "tpcc" => tpcc_command(a)?,
@@ -1632,5 +1642,300 @@ fn fixed_set_command(mut a: args::Args) -> Result<(), String> {
         std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
         println!("{}", path.display());
     }
+    Ok(())
+}
+
+/// The `clickbench` command.
+fn clickbench_command(mut a: args::Args) -> Result<(), String> {
+    let dir = PathBuf::from(a.value("dir").ok_or("usage: clickbench needs --dir DIR")?);
+    let engine = a.value("engine").ok_or("usage: clickbench needs --engine NAME")?;
+    if !engine.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err(format!(
+            "usage: the engine name {engine:?} may have only letters, digits, _ and -"
+        ));
+    }
+    let steps = a.value("steps").unwrap_or_else(|| "load,run,concurrent".to_owned());
+    let steps: Vec<&str> = steps.split(',').collect();
+    if let Some(bad) = steps.iter().find(|s| !["load", "run", "concurrent"].contains(s)) {
+        return Err(format!("usage: unknown step {bad:?}, the steps are load, run and concurrent"));
+    }
+    let source = a.value("source");
+    if steps.contains(&"load") && source.is_none() {
+        return Err("usage: the load step needs --source FILE".to_owned());
+    }
+    let lib = a
+        .value("lib")
+        .map_or_else(|| dir.join("..").join("lib").join("benchmark-common.sh"), PathBuf::from);
+    let unit = a.value("unit");
+    let measure = match (unit, a.value("attach")) {
+        (Some(u), None) => {
+            clickbench::Measure::Server { path: Cgroup::of_unit(&u)?.path, unit: Some(u) }
+        }
+        (None, Some(p)) => {
+            clickbench::Measure::Server { path: Cgroup::attach(Path::new(&p))?.path, unit: None }
+        }
+        (None, None) => clickbench::Measure::Own {
+            prefix: format!("clickbench-{engine}"),
+            cpus: a.value("cpus"),
+        },
+        _ => return Err("usage: give at most one of --unit and --attach".to_owned()),
+    };
+    let conn = a.value("conn");
+    let duckdb_bin = a.value("duckdb-bin");
+    let expected = a.value("answers");
+    let save_answers = a.value("save-answers");
+    let result_file = a.value("result-file");
+    let smoke = a.flag("smoke");
+    let json = a.flag("json");
+    let report_dir = a.value("report");
+    let machine = a.value("machine");
+    a.finish()?;
+    let system = clickbench::System::open(&dir)?;
+    let say = |line: &str| {
+        if !json {
+            println!("{line}");
+        }
+    };
+    let meta = report::Meta::now(&format!("clickbench-{engine}"), machine.clone(), None, smoke);
+    let mut result = meta.to_json();
+    if smoke {
+        result =
+            result.with("note", "smoke run: it shows that the driver works, it is not a baseline");
+    }
+    result = result
+        .with("engine_name", engine.as_str())
+        .with("dir", dir.display().to_string())
+        .with("settings", system.env.to_json())
+        .with("measure", measure.to_json())
+        .with("steps", steps.iter().map(|s| (*s).to_owned()).collect::<Vec<String>>())
+        .with(
+            "kernel",
+            std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default().trim(),
+        );
+    let answers_from = match (&measure, engine.as_str()) {
+        (clickbench::Measure::Server { .. }, _) => Some(AnswersFrom::Server(pg::Config::parse(
+            conn.as_deref().unwrap_or("user=bench dbname=test"),
+        )?)),
+        (clickbench::Measure::Own { .. }, "duckdb") => Some(AnswersFrom::DuckDb(vec![
+            duckdb_bin.unwrap_or_else(|| "duckdb".to_owned()),
+            "-readonly".to_owned(),
+            dir.join("hits.db").display().to_string(),
+        ])),
+        _ => None,
+    };
+    let mut out = ClickbenchOut::default();
+    let outcome = clickbench_steps(
+        &system,
+        &measure,
+        &steps,
+        (source.as_deref(), &lib),
+        answers_from.as_ref(),
+        (expected.as_deref(), save_answers.as_deref()),
+        &mut result,
+        &mut out,
+        &say,
+    );
+    if let Err(e) = &outcome {
+        result = result.with("error", e.as_str());
+    }
+    if let Some(path) = &result_file {
+        let template_path = dir.join("template.json");
+        let template = Json::parse(
+            &std::fs::read_to_string(&template_path)
+                .map_err(|e| format!("{}: {e}", template_path.display()))?,
+        )?;
+        let file = clickbench::result_file(
+            &template,
+            &report::today(),
+            machine.as_deref().unwrap_or("unknown"),
+            smoke,
+            (out.load_time, out.data_size),
+            out.concurrent,
+            &out.times,
+        )?;
+        std::fs::write(path, file.pretty()).map_err(|e| format!("{path}: {e}"))?;
+        say(&format!("result   {path}"));
+    }
+    if let Some(dir) = &report_dir {
+        let (md, js) = report::write(Path::new(dir), &result)?;
+        say(&format!("report   {}\n         {}", md.display(), js.display()));
+    }
+    if json {
+        print!("{}", result.pretty());
+    }
+    outcome
+}
+
+/// Where the answers of an unmeasured pass come from.
+enum AnswersFrom {
+    Server(pg::Config),
+    /// The `duckdb` program, its options and the database file.
+    DuckDb(Vec<String>),
+}
+
+/// The numbers of the ClickBench result file.
+#[derive(Default)]
+struct ClickbenchOut {
+    load_time: Option<f64>,
+    data_size: Option<u64>,
+    concurrent: Option<(Option<f64>, Option<f64>)>,
+    times: Vec<Vec<Option<f64>>>,
+}
+
+/// The steps of the `clickbench` command, in the order of `bench_main` of the pin.
+#[allow(clippy::too_many_arguments)]
+fn clickbench_steps(
+    system: &clickbench::System,
+    measure: &clickbench::Measure,
+    steps: &[&str],
+    (source, lib): (Option<&str>, &Path),
+    answers_from: Option<&AnswersFrom>,
+    (expected, save_answers): (Option<&str>, Option<&str>),
+    result: &mut Json,
+    out: &mut ClickbenchOut,
+    say: &dyn Fn(&str),
+) -> Result<(), String> {
+    let add = |result: &mut Json, key: &str, value: Json| {
+        *result = std::mem::replace(result, Json::Null).with(key, value);
+    };
+    system.start()?;
+    if steps.contains(&"load") {
+        let source = Path::new(source.ok_or("the load step needs --source")?);
+        let placed = system.place_source(source)?;
+        say(&format!("load     {} as {}", source.display(), placed.display()));
+        let (secs, usage) = system.load(measure)?;
+        say(&format!("load     {secs:.1} s"));
+        out.load_time = Some(secs);
+        add(
+            result,
+            "load",
+            Json::obj()
+                .with("source", source.display().to_string())
+                .with("load_time_s", secs)
+                .with("usage", usage.to_json()),
+        );
+    }
+    // The database of a server exists only after the load.
+    match answers_from {
+        Some(AnswersFrom::Server(conn)) => {
+            let c = pg::Conn::connect(conn)?;
+            add(result, "engine_version", Json::from(c.server_version.as_str()));
+        }
+        Some(AnswersFrom::DuckDb(argv)) => {
+            let v = std::process::Command::new(&argv[0])
+                .arg("--version")
+                .output()
+                .map_err(|e| format!("{}: {e}", argv[0]))?;
+            add(result, "engine_version", Json::from(String::from_utf8_lossy(&v.stdout).trim()));
+        }
+        None => {}
+    }
+    if steps.contains(&"run") {
+        if let clickbench::Measure::Server { .. } = measure {
+            let cg = match measure {
+                clickbench::Measure::Server { unit: Some(u), .. } => Cgroup::of_unit(u)?,
+                clickbench::Measure::Server { path, .. } => Cgroup::attach(path)?,
+                clickbench::Measure::Own { .. } => unreachable!(),
+            };
+            add(result, "idle_base", cgroup::idle_base(&cg, cgroup::IDLE_BASE)?.to_json());
+        }
+        let queries = system.queries()?;
+        let mut results = Vec::new();
+        let mut rows = Vec::new();
+        for (i, sql) in queries.iter().enumerate() {
+            let tries = system.run_query(measure, &format!("q{i}"), sql);
+            let mut line = format!("{:<6}", tries.result.name);
+            for t in &tries.times {
+                match t {
+                    Some(t) => line.push_str(&format!(" {t:>9.3}")),
+                    None => line.push_str("      null"),
+                }
+            }
+            if let Some(e) = &tries.result.error {
+                line.push_str(&format!("  FAILED: {e}"));
+            }
+            say(&line);
+            out.times.push(tries.times);
+            results.push(tries.result);
+        }
+        let size = system.data_size()?;
+        say(&format!("data-size {size}"));
+        out.data_size = Some(size);
+        add(result, "data_size_bytes", Json::from(size));
+        if let Some(from) = answers_from {
+            say("answers");
+            for (r, sql) in results.iter_mut().zip(&queries) {
+                if r.error.is_some() {
+                    continue;
+                }
+                let answer = match from {
+                    AnswersFrom::Server(conn) => pg::Conn::connect(conn)
+                        .and_then(|mut c| {
+                            c.query(sql).map(|rows| answers::Answer {
+                                columns: rows.columns,
+                                rows: rows.rows,
+                            })
+                        })
+                        .map_err(String::from),
+                    AnswersFrom::DuckDb(argv) => suite::duckdb_answer(argv.clone(), sql),
+                };
+                match answer {
+                    Ok(a) => r.answer = Some(a),
+                    Err(e) => r.error = Some(format!("the answer pass failed: {e}")),
+                }
+            }
+            answer_files(&mut results, save_answers, expected)?;
+        }
+        for (r, t) in results.iter().zip(&out.times) {
+            rows.push(
+                r.to_json()
+                    .with("tries_s", t.iter().map(|v| Json::from(*v)).collect::<Vec<Json>>()),
+            );
+        }
+        if steps.contains(&"concurrent") {
+            concurrent_step(system, measure, lib, result, out, say)?;
+        }
+        return finish_suite(&results, rows, expected, result, say);
+    }
+    if steps.contains(&"concurrent") {
+        concurrent_step(system, measure, lib, result, out, say)?;
+    }
+    Ok(())
+}
+
+fn concurrent_step(
+    system: &clickbench::System,
+    measure: &clickbench::Measure,
+    lib: &Path,
+    result: &mut Json,
+    out: &mut ClickbenchOut,
+    say: &dyn Fn(&str),
+) -> Result<(), String> {
+    let duration = system.env.get("BENCH_CONCURRENT_DURATION").to_owned();
+    say(&format!(
+        "concurrent {} connections for {duration} s",
+        system.env.get("BENCH_CONCURRENT_CONNECTIONS")
+    ));
+    let j = match system.concurrent(lib, measure)? {
+        None => {
+            say("concurrent off, BENCH_CONCURRENT_DURATION=0");
+            out.concurrent = Some((None, None));
+            Json::from("off: BENCH_CONCURRENT_DURATION=0")
+        }
+        Some(clickbench::Concurrent { qps, error_ratio: ratio, usage }) => {
+            say(&format!(
+                "concurrent {} queries per second, error ratio {}",
+                qps.map_or("null".to_owned(), |v| format!("{v:.3}")),
+                ratio.map_or("null".to_owned(), |v| format!("{v:.3}"))
+            ));
+            out.concurrent = Some((qps, ratio));
+            Json::obj()
+                .with("lib", lib.display().to_string())
+                .with("qps", qps)
+                .with("error_ratio", ratio)
+                .with("usage", usage.to_json())
+        }
+    };
+    *result = std::mem::replace(result, Json::Null).with("concurrent", j);
     Ok(())
 }
