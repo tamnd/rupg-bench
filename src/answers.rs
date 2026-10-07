@@ -185,14 +185,18 @@ pub(crate) fn parse_csv(text: &str) -> Result<Answer, String> {
     Ok(Answer { columns, rows })
 }
 
-/// Reads a file of the TPC-H answer set, for example `dbgen/answers/q1.out`: a header line, then one line for each row, with `|` between the fields and spaces that pad them.
+/// Reads a file of the TPC-H answer set, for example `dbgen/answers/q1.out`: a header line, then one line for each row, with `|` between the fields and spaces that pad them. Spaces pad a number on the left and a text on the right. A text can start with a space in the data, for example a `c_address`, so only the spaces at its end are removed.
 pub(crate) fn parse_tpch(text: &str) -> Result<Answer, String> {
     let mut lines = text.lines().filter(|l| !l.trim().is_empty());
     let header = lines.next().ok_or("an answer file with no header")?;
     let columns: Vec<String> = header.split('|').map(|c| c.trim().to_owned()).collect();
+    let field = |f: &str| {
+        let t = f.trim();
+        Some(if number(t).is_some() { t.to_owned() } else { f.trim_end().to_owned() })
+    };
     let mut rows = Vec::new();
     for line in lines {
-        let row: Vec<Option<String>> = line.split('|').map(|f| Some(f.trim().to_owned())).collect();
+        let row: Vec<Option<String>> = line.split('|').map(field).collect();
         if row.len() != columns.len() {
             return Err(format!(
                 "{line:?} has {} fields and the header has {}",
@@ -382,6 +386,8 @@ mod tests {
 
     #[test]
     fn tpch_answer_files() {
+        let spaced = parse_tpch("c_name    |c_address\nCustomer#1|  W556MX    \n").unwrap();
+        assert_eq!(spaced.rows, [[Some("Customer#1".to_owned()), Some("  W556MX".to_owned())]]);
         let text = "c_name                   |c_custkey           |col6                                     \nCustomer#000128120       |              128120|323.00\n";
         let a = parse_tpch(text).unwrap();
         assert_eq!(a.columns, ["c_name", "c_custkey", "col6"]);
