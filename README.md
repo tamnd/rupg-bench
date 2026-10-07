@@ -12,7 +12,7 @@ The procedure is [`spec/20-benchmarks.md`](https://github.com/tamnd/rupg/blob/ma
 
 ## Status
 
-Early. The crate builds and CI is green, but no suite runs yet. `rupg-bench gates` prints the twelve gates of spec/02 section 2.10, `rupg-bench pins` prints the pinned versions, `rupg-bench measure` runs the cgroup v2 runner, `rupg-bench load` runs the load cases, `rupg-bench answers` checks answer sets, and `rupg-bench report` writes the report files. The first milestone, M0, builds the harness and measures every baseline that a later gate uses. Every command below is the planned interface from the spec.
+Early. The crate builds and CI is green, but no suite runs yet. `rupg-bench gates` prints the twelve gates of spec/02 section 2.10, `rupg-bench pins` prints the pinned versions, `rupg-bench measure` runs the cgroup v2 runner, `rupg-bench load` runs the load cases, `rupg-bench answers` checks answer sets, `rupg-bench report` writes the report files, and `rupg-bench pgbench` runs the pgbench smoke run with its check. The first milestone, M0, builds the harness and measures every baseline that a later gate uses. Every command below is the planned interface from the spec.
 
 ## The gates
 
@@ -115,6 +115,12 @@ rupg-bench answers --expected tpch_tools_3.0.1/dbgen/answers --actual out/
 ```sh
 rupg-bench measure --unit cron.service --idle --json > idle.json
 rupg-bench report --result idle.json --suite idle-base --machine server3 --smoke
+```
+
+`rupg-bench pgbench` runs the smoke test of spec/21 section 21.4.6 against a running PostgreSQL server. It runs `pgbench -i` at the scale, measures the idle base of the server cgroup over 10 s, and runs the TPC-B like script of pgbench for a fixed time while it measures the server cgroup. Then it checks that the sums of `abalance`, `tbalance` and `bbalance` are equal, and that `pgbench_history` has one row for each transaction that pgbench reports. A run that fails the check is a wrong answer and the command fails. The harness talks to the server with its own small client for protocol 3.0, so it needs no `libpq`. `machines/install/postgresql.sh` makes the role and the database `bench`, allows that role on the Unix socket with no password, and turns on the io accounting of the unit.
+
+```sh
+rupg-bench pgbench --unit postgresql@19-main --scale 1 --clients 4 --time 30 --smoke --report reports --machine server3
 ```
 
 ## The reporting rules
