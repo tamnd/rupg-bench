@@ -40,6 +40,11 @@ impl Args {
         self.options.remove(i).1
     }
 
+    /// True if `--name` has a value. It does not take the value.
+    pub(crate) fn value_is_set(&self, name: &str) -> bool {
+        self.options.iter().any(|(n, v)| n == name && v.is_some())
+    }
+
     /// Takes `--name` with no value. A flag that has a value is an error in `finish`.
     pub(crate) fn flag(&mut self, name: &str) -> bool {
         match self.options.iter().position(|(n, v)| n == name && v.is_none()) {

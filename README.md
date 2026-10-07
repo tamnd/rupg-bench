@@ -12,7 +12,7 @@ The procedure is [`spec/20-benchmarks.md`](https://github.com/tamnd/rupg/blob/ma
 
 ## Status
 
-Early. The crate builds and CI is green, but no suite runs yet. `rupg-bench gates` prints the twelve gates of spec/02 section 2.10, `rupg-bench pins` prints the pinned versions, and `rupg-bench measure` runs the cgroup v2 runner. The first milestone, M0, builds the harness and measures every baseline that a later gate uses. Every command below is the planned interface from the spec.
+Early. The crate builds and CI is green, but no suite runs yet. `rupg-bench gates` prints the twelve gates of spec/02 section 2.10, `rupg-bench pins` prints the pinned versions, `rupg-bench measure` runs the cgroup v2 runner, and `rupg-bench load` runs the load cases. The first milestone, M0, builds the harness and measures every baseline that a later gate uses. Every command below is the planned interface from the spec.
 
 ## The gates
 
@@ -95,6 +95,13 @@ Each suite runs every system in its own cgroup v2 and reads `memory.peak`, `memo
 ```sh
 rupg-bench measure --name duckdb --cpus 0-15 --du hits.db -- duckdb hits.db -c "SELECT count(*) FROM hits"
 rupg-bench measure --unit postgresql@19-main --idle --du /var/lib/postgresql/19/main --json -- psql -c "SELECT 1"
+```
+
+`rupg-bench load` runs the load cases of spec/20 section 20.3.1 and then times the load command in the same runner. For case A it drops the caches, checks with `fincore` that no page of the source is resident, times `cat <source> > /dev/null` as the reference time `R`, drops the caches and checks again, and then times the load `L`. The result has `L`, `R` and `L / R`. For case B it reads the source twice, and `fincore` must report at least 99 percent of the pages resident. If fewer pages are resident, the run does the steps of case A and is recorded as case A. The load command must end with a checkpoint (spec/20 section 20.3.2). The command needs root, for `drop_caches`.
+
+```sh
+rupg-bench load --case a --source hits.parquet --name duckdb-load --du hits.db -- \
+  duckdb hits.db -c "CREATE TABLE hits AS SELECT * FROM read_parquet('hits.parquet'); CHECKPOINT;"
 ```
 
 ## The reporting rules
