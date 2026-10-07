@@ -12,7 +12,7 @@ The procedure is [`spec/20-benchmarks.md`](https://github.com/tamnd/rupg/blob/ma
 
 ## Status
 
-Early. The crate builds and CI is green, but no suite runs yet. `rupg-bench gates` prints the twelve gates of spec/02 section 2.10. The first milestone, M0, builds the harness and measures every baseline that a later gate uses. Every command below is the planned interface from the spec.
+Early. The crate builds and CI is green, but no suite runs yet. `rupg-bench gates` prints the twelve gates of spec/02 section 2.10, and `rupg-bench pins` prints the pinned versions. The first milestone, M0, builds the harness and measures every baseline that a later gate uses. Every command below is the planned interface from the spec.
 
 ## The gates
 
@@ -51,12 +51,12 @@ A run whose check fails is not reported as a number. It is reported as a wrong-a
 | System | Version | How it runs | How rupg runs for that comparison |
 |---|---|---|---|
 | PostgreSQL 19 | `REL_19_STABLE` at `7d3d2db7`, then 19.0 | server, `psql` or `libpq` over a Unix socket | `rupg-server`, the same client over a Unix socket |
-| ClickHouse | 26.9 or newer | server, `clickhouse-client` over TCP | `rupg-server`, `psql` over TCP |
-| DuckDB | 2.0.0, or the newest release if it is late | in process, the `duckdb` program | in process, the `rupg` program in embedded mode |
+| ClickHouse | 26.9.12.8, the newest stable release on 7 October 2026 | server, `clickhouse-client` over TCP | `rupg-server`, `psql` over TCP |
+| DuckDB | 1.5.6, then 2.0.0 when it is released | in process, the `duckdb` program | in process, the `rupg` program in embedded mode |
 | Umbra or CedarDB | Umbra 26.09, CedarDB of 29 September 2026 | server, `psql` | `rupg-server`, the same |
-| SQLite | 3.53.1 | in process | in process |
+| SQLite | 3.53.4 | in process | in process |
 
-Umbra and CedarDB are used only where the license permits a published comparison. Each result records the exact version string of each system, the harness commit, the rupg commit, the configuration file, the kernel, the machine type and the date.
+The exact pins are in [`pins.toml`](pins.toml), and `rupg-bench pins` prints them. HammerDB 6.0 and the TPC-H tools 3.0.1 are pinned there too. Umbra and CedarDB are used only where the license permits a published comparison. Each result records the exact version string of each system, the harness commit, the rupg commit, the configuration file, the kernel, the machine type and the date.
 
 ## The machines
 
