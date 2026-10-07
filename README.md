@@ -12,7 +12,7 @@ The procedure is [`spec/20-benchmarks.md`](https://github.com/tamnd/rupg/blob/ma
 
 ## Status
 
-Early. The crate builds and CI is green, but no suite runs yet. `rupg-bench gates` prints the twelve gates of spec/02 section 2.10, `rupg-bench pins` prints the pinned versions, `rupg-bench measure` runs the cgroup v2 runner, and `rupg-bench load` runs the load cases. The first milestone, M0, builds the harness and measures every baseline that a later gate uses. Every command below is the planned interface from the spec.
+Early. The crate builds and CI is green, but no suite runs yet. `rupg-bench gates` prints the twelve gates of spec/02 section 2.10, `rupg-bench pins` prints the pinned versions, `rupg-bench measure` runs the cgroup v2 runner, `rupg-bench load` runs the load cases, `rupg-bench answers` checks answer sets, and `rupg-bench report` writes the report files. The first milestone, M0, builds the harness and measures every baseline that a later gate uses. Every command below is the planned interface from the spec.
 
 ## The gates
 
@@ -104,6 +104,19 @@ rupg-bench load --case a --source hits.parquet --name duckdb-load --du hits.db -
   duckdb hits.db -c "CREATE TABLE hits AS SELECT * FROM read_parquet('hits.parquet'); CHECKPOINT;"
 ```
 
+`rupg-bench answers` compares two answer sets as multisets of rows (spec/20 section 20.5). An answer set is a directory with one file `<query>.tsv` for each query: a header line with the column names, then the rows in the text format of PostgreSQL `COPY`, with `\N` for NULL. So `COPY (<query>) TO STDOUT WITH (HEADER)` writes one. Floats match within a relative 1e-9. An expected file `<query>.out` is a file of the TPC-H answer set at SF1, and its values match with the rules of TPC-H clause 2.1.3.5: equal column values and counts, sums within 100, and averages and ratios within 1 percent. The TPC-H tools are under the TPC EULA, so the harness fetches the answer set at the pin of `pins.toml` and this repository does not hold a copy.
+
+```sh
+rupg-bench answers --expected tpch_tools_3.0.1/dbgen/answers --actual out/
+```
+
+`rupg-bench report` writes `reports/<date>/<commit>-<machine>-<suite>.json` and a Markdown file with the same name from the `--json` output of a command. The Markdown file comes from the JSON file only. A smoke run has `-smoke` at the end of its name and a line at the top that says that its numbers are not baselines.
+
+```sh
+rupg-bench measure --unit cron.service --idle --json > idle.json
+rupg-bench report --result idle.json --suite idle-base --machine server3 --smoke
+```
+
 ## The reporting rules
 
 1. A claim has five parts: one named machine, one metric, a baseline that we measured, the same transport on both sides, and the ratio. A claim without all five is not made.
@@ -123,7 +136,7 @@ rupg-bench load --case a --source hits.parquet --name duckdb-load --du hits.db -
 ```
 pins.toml          versions of every system, the rupg commit
 src/               suite drivers, the cgroup runner, the report generator
-answers/           PostgreSQL 19 answers for ClickBench and TPC-H, TPC-H SF1 set
+answers/           PostgreSQL 19 answers for ClickBench and TPC-H (the TPC-H SF1 set is fetched)
 clickbench/        the rupg directory of our ClickBench fork
 machines/          scripts for 4xl, metal, tpch, oltp and cluster
 ratchet.toml       the instruction counts and the best number of each row
