@@ -15,6 +15,7 @@ mod answers;
 mod args;
 mod cgroup;
 mod gates;
+mod instructions;
 mod json;
 mod load;
 mod pg;
@@ -53,6 +54,15 @@ commands:
                               --conn takes libpq words: host, port, user, dbname, password (user=bench dbname=bench by default).
                               --report writes the report files under DIR (see report).
                               --smoke marks the result as a smoke run, which is not a baseline.
+  instructions --queries PATH --set NAME (--duckdb DB [--duckdb-bin B] [--threads N] | --unit UNIT | --attach PATH)
+          [--bin DIR] [--conn WORDS] [--repeat N] [--ratchet FILE] [--save FILE] [--smoke] [--json] [--report DIR [--machine M]]
+                              count the instructions retired for each query with perf stat (spec/21 section 21.14).
+                              PATH is a file with one query on each line or a directory of <name>.sql files.
+                              --duckdb counts the duckdb process. --unit and --attach count the server cgroup on all
+                              CPUs while psql from --bin sends the query. Each query runs --repeat times (3) and the
+                              minimum counts, minus the count of SELECT 1. --ratchet compares with [instructions.NAME]
+                              of a ratchet file and fails over the budgets (3 percent a query, 1 percent in total).
+                              --save writes that table for this run.
   --version                   print the version";
 
 fn main() -> ExitCode {
@@ -96,6 +106,7 @@ fn run(argv: &[String]) -> Result<(), String> {
         "load" => load_command(a)?,
         "report" => report_command(a)?,
         "answers" => answers_command(a)?,
+        "instructions" => instructions_command(a)?,
         "pgbench" => pgbench_command(a)?,
         "--version" | "-V" => println!("rupg-bench {}", env!("CARGO_PKG_VERSION")),
         "--help" | "-h" | "help" => println!("{USAGE}"),
@@ -471,5 +482,134 @@ fn pgbench_run(
         Ok(())
     } else {
         Err(format!("wrong answer, the run is not a number: {}", failures.join("; ")))
+    }
+}
+
+/// The `instructions` command.
+fn instructions_command(mut a: args::Args) -> Result<(), String> {
+    let queries = a.value("queries").ok_or("usage: instructions needs --queries PATH")?;
+    let set_name = a.value("set").ok_or("usage: instructions needs --set NAME")?;
+    if !set_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err(format!(
+            "usage: the set name {set_name:?} may have only letters, digits, _ and -"
+        ));
+    }
+    let repeat: usize = number(&mut a, "repeat", 3)?;
+    if repeat == 0 {
+        return Err("usage: --repeat must be at least 1".to_owned());
+    }
+    let ratchet = a.value("ratchet");
+    let save = a.value("save");
+    let smoke = a.flag("smoke");
+    let json = a.flag("json");
+    let report_dir = a.value("report");
+    let machine = a.value("machine");
+    let bin = a.value("bin").unwrap_or_else(|| "/usr/lib/postgresql/19/bin".to_owned());
+    let conn = pg::Config::parse(
+        &a.value("conn").unwrap_or_else(|| "user=bench dbname=bench".to_owned()),
+    )?;
+    let engine = if let Some(db) = a.value("duckdb") {
+        let duckdb = a.value("duckdb-bin").unwrap_or_else(|| "duckdb".to_owned());
+        let threads: u32 = number(&mut a, "threads", 1)?;
+        let argv = [
+            duckdb,
+            "-readonly".to_owned(),
+            db,
+            "-cmd".to_owned(),
+            format!("SET threads = {threads}"),
+            "-c".to_owned(),
+        ];
+        instructions::Engine::InProcess(argv.to_vec())
+    } else {
+        if a.value_is_set("name") {
+            return Err("usage: instructions counts a running server, so give --unit or --attach"
+                .to_owned());
+        }
+        let cg = target(&mut a)?;
+        let cgroup = cg
+            .path
+            .strip_prefix(cgroup::CGROUP_ROOT)
+            .map_err(|_| format!("{} is not under {}", cg.path.display(), cgroup::CGROUP_ROOT))?
+            .display()
+            .to_string();
+        let psql = Path::new(&bin).join("psql").display().to_string();
+        let mut client = vec![
+            psql,
+            "-X".to_owned(),
+            "-q".to_owned(),
+            "-v".to_owned(),
+            "ON_ERROR_STOP=1".to_owned(),
+        ];
+        client.extend(["-h".to_owned(), conn.host.clone(), "-p".to_owned(), conn.port.to_string()]);
+        client.extend(["-U".to_owned(), conn.user.clone(), "-d".to_owned(), conn.dbname.clone()]);
+        client.extend(["-o".to_owned(), "/dev/null".to_owned(), "-c".to_owned()]);
+        instructions::Engine::Server { cgroup, client }
+    };
+    a.finish()?;
+    let set = instructions::read_set(Path::new(&queries))?;
+    if set.is_empty() {
+        return Err(format!("{queries} has no query"));
+    }
+    let meta = report::Meta::now(&format!("instructions-{set_name}"), machine, None, smoke);
+    let mut result = meta.to_json();
+    if smoke {
+        result =
+            result.with("note", "smoke run: it shows that the runner works, it is not the ratchet");
+    }
+    result = result
+        .with("set", set_name.as_str())
+        .with("queries_from", queries.as_str())
+        .with("repeat", repeat)
+        .with(
+            "kernel",
+            std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default().trim(),
+        )
+        .with("engine", engine.to_json());
+    let counts = instructions::count(&engine, &set, repeat, |line| {
+        if !json {
+            println!("{line}");
+        }
+    })?;
+    result = result.with("counts", counts.to_json());
+    let mut over = Vec::new();
+    if let Some(file) = &ratchet {
+        let text = std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
+        let doc = toml::Doc::parse(&text).map_err(|e| format!("{file}: {e}"))?;
+        over = instructions::compare(&counts, &doc, &set_name)?;
+        result = result.with(
+            "ratchet",
+            Json::obj().with("file", file.as_str()).with("over_budget", over.clone()),
+        );
+    }
+    if let Some(file) = &save {
+        let text = format!(
+            "# Instruction counts of spec/21 section 21.14, written by rupg-bench instructions --save.\n{}",
+            counts.ratchet_table(&set_name, &meta.machine, &meta.date)
+        );
+        std::fs::write(file, text).map_err(|e| format!("{file}: {e}"))?;
+    }
+    if let Some(dir) = &report_dir {
+        let (md, js) = report::write(Path::new(dir), &result)?;
+        if !json {
+            println!("report   {}\n         {}", md.display(), js.display());
+        }
+    }
+    if json {
+        print!("{}", result.pretty());
+    } else {
+        println!("base     {:?} for SELECT 1", counts.base);
+        println!(
+            "total    {} net instructions in {} queries",
+            counts.total(),
+            counts.queries.len()
+        );
+        for line in &over {
+            println!("OVER     {line}");
+        }
+    }
+    if over.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("{} counts are over their budget", over.len()))
     }
 }

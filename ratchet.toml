@@ -1,0 +1,11 @@
+# The instruction count ratchet of spec/21 section 21.14.
+#
+# The dedicated Linux x86-64 runner writes one table for each set with
+# `rupg-bench instructions --set NAME --save FILE`, for example
+# [instructions.clickbench]. Each key is a query and its value is the net
+# instruction count of that query. `total` is the sum of the net counts.
+# `rupg-bench instructions --ratchet ratchet.toml` fails when one query rises by
+# more than 3 percent or the total by more than 1 percent.
+#
+# The file has no table yet. Counts from a shared machine such as server3 are
+# smoke runs and do not belong here.
