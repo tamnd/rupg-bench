@@ -19,6 +19,7 @@ mod gates;
 mod instructions;
 mod json;
 mod load;
+mod m1;
 mod pg;
 mod pgbench;
 mod pins;
@@ -106,6 +107,15 @@ commands:
                               (DIR/../lib/benchmark-common.sh). With --unit or --attach the server cgroup is measured,
                               else each query runs in a new cgroup. The answers come from an unmeasured pass, through
                               --conn (user=bench dbname=test) for a server or with duckdb on DIR/hits.db.
+  m1 --dir DIR [--steps empty,latency,throughput,recovery] [--warmup N] [--commits N] [--writers N] [--seconds S]
+          [--log-mib N] [--rows N] [--value BYTES] [--smoke] [--json] [--report DIR [--machine M]]
+                              the M1 numbers of spec/23 section 23.4 with the rupg facade at the commit of pins.toml.
+                              empty makes a database with the default options and gives the size of the file. latency
+                              times --commits (10,000) commits of one row at one writer after --warmup (1,000). throughput
+                              runs --writers (one for each core) for --seconds (30), each with its own table. recovery
+                              starts rupg-bench m1-fill, which updates --rows (256) rows of --value bytes (2,000) in each
+                              commit until --log-mib (1,024) MiB of values are in the log and exits with no close. Then it
+                              drops the file from the page cache with dd where it can and times the open that replays the log.
   --version                   print the version";
 
 fn main() -> ExitCode {
@@ -156,6 +166,8 @@ fn run(argv: &[String]) -> Result<(), String> {
         "ycsb" => ycsb_command(a)?,
         "tpcc" => tpcc_command(a)?,
         "fixed-set" => fixed_set_command(a)?,
+        "m1" => m1_command(a)?,
+        "m1-fill" => m1_fill_command(a)?,
         "--version" | "-V" => println!("rupg-bench {}", env!("CARGO_PKG_VERSION")),
         "--help" | "-h" | "help" => println!("{USAGE}"),
         other => return Err(format!("usage: unknown command {other:?}\n{USAGE}")),
@@ -407,6 +419,112 @@ fn number<T: std::str::FromStr>(a: &mut args::Args, name: &str, default: T) -> R
         None => Ok(default),
         Some(v) => v.parse().map_err(|_| format!("usage: --{name} {v:?} is not a number")),
     }
+}
+
+/// The settings of `m1` and `m1-fill`.
+fn m1_config(a: &mut args::Args, dir: PathBuf) -> Result<m1::Config, String> {
+    let cores = std::thread::available_parallelism().map_or(1, usize::from);
+    let seconds: f64 = number(a, "seconds", 30.0)?;
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return Err(format!("usage: --seconds {seconds} is not a number of seconds"));
+    }
+    let log_mib: u64 = number(a, "log-mib", 1024)?;
+    let log_bytes = match a.value("log-bytes") {
+        Some(v) => v.parse().map_err(|_| format!("usage: --log-bytes {v:?} is not a number"))?,
+        None => log_mib << 20,
+    };
+    Ok(m1::Config {
+        dir,
+        warmup: number(a, "warmup", 1_000)?,
+        commits: number(a, "commits", 10_000)?,
+        writers: number(a, "writers", cores)?.max(1),
+        seconds,
+        log_bytes,
+        rows: number(a, "rows", 256)?.max(1),
+        value: number(a, "value", 2_000)?.max(20),
+    })
+}
+
+/// The `m1` command: the M1 numbers of spec/23 section 23.4.
+fn m1_command(mut a: args::Args) -> Result<(), String> {
+    let dir = PathBuf::from(a.value("dir").ok_or("usage: m1 needs --dir DIR")?);
+    let steps = a.value("steps").unwrap_or_else(|| m1::STEPS.join(","));
+    let steps: Vec<&str> = steps.split(',').collect();
+    if let Some(s) = steps.iter().find(|s| !m1::STEPS.contains(s)) {
+        return Err(format!("usage: {s:?} is not a step of m1"));
+    }
+    let c = m1_config(&mut a, dir)?;
+    let smoke = a.flag("smoke");
+    let json = a.flag("json");
+    let report_dir = a.value("report");
+    let machine = a.value("machine");
+    a.finish()?;
+    std::fs::create_dir_all(&c.dir).map_err(|e| format!("{}: {e}", c.dir.display()))?;
+    let pins = pins::Pins::load(concat!(env!("CARGO_MANIFEST_DIR"), "/pins.toml"))?;
+    let rupg_commit = pins.get("rupg", "commit").unwrap_or_default().to_owned();
+    let meta = report::Meta::now("m1", machine, Some(rupg_commit.chars().take(8).collect()), smoke);
+    let mut out = Out { json: meta.to_json(), text: String::new() };
+    out.text.push_str(&format!(
+        "suite           m1
+machine         {}
+date            {}
+",
+        meta.machine, meta.date
+    ));
+    if smoke {
+        out.text.push_str(
+            "smoke run: it shows that the driver works, it is not a baseline
+",
+        );
+    }
+    out.add(
+        "rupg_commit",
+        rupg_commit.as_str(),
+        &format!(
+            "rupg            {} at {rupg_commit}
+",
+            rupg::VERSION
+        ),
+    );
+    out.add("rupg_version", rupg::VERSION, "");
+    out.add("cores", std::thread::available_parallelism().map_or(1, usize::from), "");
+    out.add("os", std::env::consts::OS, "");
+    let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
+    out.add("kernel", kernel.trim(), "");
+    out.add("dir", c.dir.display().to_string(), &format!("directory       {}\n", c.dir.display()));
+    let mut result = Ok(());
+    for step in &steps {
+        let r = match *step {
+            "empty" => m1::empty(&c),
+            "latency" => m1::latency(&c),
+            "throughput" => m1::throughput(&c),
+            _ => m1::recovery(&c),
+        };
+        match r {
+            Ok((j, text)) => out.add(step, j, &text),
+            Err(e) => {
+                out.add("error", format!("{step}: {e}"), "");
+                result = Err(format!("{step}: {e}"));
+                break;
+            }
+        }
+    }
+    if let Some(dir) = &report_dir {
+        let (md, json) = report::write(Path::new(dir), &out.json)?;
+        let text =
+            format!("report          {}\n                {}\n", md.display(), json.display());
+        out.add("report", md.display().to_string(), &text);
+    }
+    out.print(json);
+    result
+}
+
+/// `m1-fill`, the child of the recovery step of `m1`. It does not return.
+fn m1_fill_command(mut a: args::Args) -> Result<(), String> {
+    let file = PathBuf::from(a.value("file").ok_or("usage: m1-fill needs --file FILE")?);
+    let c = m1_config(&mut a, PathBuf::new())?;
+    a.finish()?;
+    m1::fill(&file, &c)
 }
 
 /// The `pgbench` command: the pgbench run and its consistency check of spec/21 section 21.4.6.

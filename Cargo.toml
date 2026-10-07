@@ -8,8 +8,9 @@ repository = "https://github.com/tamnd/rupg-bench"
 description = "The benchmark harness for rupg."
 publish = false
 
-# No dependencies yet. The drivers arrive with the milestones. The embedded runs link rupg at a pinned commit from M9.
+# The M1 numbers link the rupg facade at the commit of pins.toml. A test checks that the two commits are the same.
 [dependencies]
+rupg = { git = "https://github.com/tamnd/rupg", rev = "aed939c3488f9eae975d957bf85461499069adfd" }
 
 [lints.rust]
 missing_debug_implementations = "warn"
