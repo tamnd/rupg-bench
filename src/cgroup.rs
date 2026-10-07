@@ -133,10 +133,13 @@ impl Cgroup {
     pub(crate) fn counters(&self) -> Result<Counters, String> {
         let (usage_usec, user_usec, system_usec) =
             parse_cpu_stat(&read(&self.path.join("cpu.stat"))?)?;
-        // io.stat is empty until the cgroup does I/O, and it is missing if the io controller is off.
+        // io.stat is empty until the cgroup does I/O. It is missing if the io controller is off for the cgroup, for example in a systemd unit without IOAccounting=yes. Then the bytes are not known, and they are not 0.
         let (rbytes, wbytes) = match fs::read_to_string(self.path.join("io.stat")) {
-            Ok(text) => parse_io_stat(&text),
-            Err(_) => (0, 0),
+            Ok(text) => {
+                let (r, w) = parse_io_stat(&text);
+                (Some(r), Some(w))
+            }
+            Err(_) => (None, None),
         };
         let memory_current = read_u64(&self.path.join("memory.current"))?;
         Ok(Counters { usage_usec, user_usec, system_usec, rbytes, wbytes, memory_current })
@@ -195,8 +198,8 @@ pub(crate) struct Counters {
     pub(crate) usage_usec: u64,
     pub(crate) user_usec: u64,
     pub(crate) system_usec: u64,
-    pub(crate) rbytes: u64,
-    pub(crate) wbytes: u64,
+    pub(crate) rbytes: Option<u64>,
+    pub(crate) wbytes: Option<u64>,
     pub(crate) memory_current: u64,
 }
 
@@ -338,8 +341,8 @@ impl Interval {
             cpu_usec: end.usage_usec.saturating_sub(self.start.usage_usec),
             user_usec: end.user_usec.saturating_sub(self.start.user_usec),
             system_usec: end.system_usec.saturating_sub(self.start.system_usec),
-            rbytes: end.rbytes.saturating_sub(self.start.rbytes),
-            wbytes: end.wbytes.saturating_sub(self.start.wbytes),
+            rbytes: end.rbytes.zip(self.start.rbytes).map(|(e, s)| e.saturating_sub(s)),
+            wbytes: end.wbytes.zip(self.start.wbytes).map(|(e, s)| e.saturating_sub(s)),
             memory_peak,
             peak_scope: self.peak.scope,
             file_max: max.file,
@@ -357,8 +360,9 @@ pub(crate) struct Usage {
     pub(crate) cpu_usec: u64,
     pub(crate) user_usec: u64,
     pub(crate) system_usec: u64,
-    pub(crate) rbytes: u64,
-    pub(crate) wbytes: u64,
+    /// None when the io controller is off for the cgroup.
+    pub(crate) rbytes: Option<u64>,
+    pub(crate) wbytes: Option<u64>,
     pub(crate) memory_peak: u64,
     pub(crate) peak_scope: PeakScope,
     pub(crate) file_max: u64,
@@ -397,11 +401,15 @@ impl Usage {
             mib(self.file_max),
             mib(self.pss_max),
             mib(self.current_max),
-            mib(self.rbytes),
-            mib(self.wbytes),
+            io_bytes(self.rbytes),
+            io_bytes(self.wbytes),
             self.samples
         )
     }
+}
+
+fn io_bytes(bytes: Option<u64>) -> String {
+    bytes.map_or_else(|| "not measured: the io controller is off for this cgroup".to_owned(), mib)
 }
 
 /// Bytes as MiB with two decimals, and the exact byte count.
@@ -547,8 +555,8 @@ mod tests {
             cpu_usec: 1,
             user_usec: 1,
             system_usec: 0,
-            rbytes: 2,
-            wbytes: 3,
+            rbytes: Some(2),
+            wbytes: None,
             memory_peak: 4,
             peak_scope: PeakScope::Cgroup,
             file_max: 5,
@@ -563,6 +571,8 @@ mod tests {
             assert!(text.contains(&format!("\"{key}\"")), "{key}");
         }
         assert!(text.contains("since the cgroup was created"));
+        assert!(text.contains("\"wbytes\": null"));
+        assert!(u.text().contains("io write        not measured"));
     }
 
     #[test]

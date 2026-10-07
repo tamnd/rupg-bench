@@ -72,8 +72,13 @@ impl Meta {
     }
 }
 
-/// The short commit of the harness, or `unknown` outside a git checkout.
+/// The short commit of the harness: `RUPG_BENCH_COMMIT` when it is set, for a copy of the tree with no `.git`, else `git rev-parse` in the tree, else `unknown`.
 fn harness_commit() -> String {
+    if let Ok(c) = std::env::var("RUPG_BENCH_COMMIT")
+        && !c.is_empty()
+    {
+        return c;
+    }
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     Command::new("git")
         .arg("-C")

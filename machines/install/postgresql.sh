@@ -34,6 +34,22 @@ fi
 if ! pg_lsclusters -h | awk '{print $1"/"$2}' | grep -qx "$major/main"; then
     pg_createcluster "$major" main >/dev/null
 fi
+# The harness connects as the role bench to the database bench over the Unix socket, with no password.
+# The rule is for the local socket only, and it is the first rule, so peer does not reject the role.
+hba=/etc/postgresql/$major/main/pg_hba.conf
+if ! grep -qE '^local[[:space:]]+all[[:space:]]+bench[[:space:]]+trust' "$hba"; then
+    sed -i '1i local   all             bench                                   trust' "$hba"
+fi
+# spec/20 section 20.4 reads io.stat in the cgroup of the server. systemd turns on the io controller for a unit only with IOAccounting=yes.
+dropin=/etc/systemd/system/postgresql@$major-main.service.d
+mkdir -p "$dropin"
+printf '[Service]\nCPUAccounting=yes\nMemoryAccounting=yes\nIOAccounting=yes\n' >"$dropin/rupg-bench.conf"
 systemctl daemon-reload
 systemctl restart "postgresql@$major-main"
-sudo -u postgres psql -Atc 'SELECT version()'
+if [ "$(sudo -u postgres psql -Atc "SELECT count(*) FROM pg_roles WHERE rolname = 'bench'")" = 0 ]; then
+    sudo -u postgres psql -qc 'CREATE ROLE bench LOGIN; GRANT pg_read_server_files TO bench'
+fi
+if [ "$(sudo -u postgres psql -Atc "SELECT count(*) FROM pg_database WHERE datname = 'bench'")" = 0 ]; then
+    sudo -u postgres createdb -O bench bench
+fi
+psql -h /var/run/postgresql -U bench -d bench -Atc 'SELECT version()'
