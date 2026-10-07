@@ -12,7 +12,7 @@ The procedure is [`spec/20-benchmarks.md`](https://github.com/tamnd/rupg/blob/ma
 
 ## Status
 
-Early. The crate builds and CI is green. TPC-H and pgbench run, and the other suites do not run yet. `rupg-bench gates` prints the twelve gates of spec/02 section 2.10, `rupg-bench pins` prints the pinned versions, `rupg-bench measure` runs the cgroup v2 runner, `rupg-bench load` runs the load cases, `rupg-bench answers` checks answer sets, `rupg-bench report` writes the report files, `rupg-bench pgbench` runs the pgbench smoke run with its check, `rupg-bench instructions` counts the instructions of each query, and `rupg-bench tpch` runs TPC-H. The first milestone, M0, builds the harness and measures every baseline that a later gate uses. Every command below is the planned interface from the spec.
+Early. The crate builds and CI is green. TPC-H, YCSB and pgbench run, and the other suites do not run yet. `rupg-bench gates` prints the twelve gates of spec/02 section 2.10, `rupg-bench pins` prints the pinned versions, `rupg-bench measure` runs the cgroup v2 runner, `rupg-bench load` runs the load cases, `rupg-bench answers` checks answer sets, `rupg-bench report` writes the report files, `rupg-bench pgbench` runs the pgbench smoke run with its check, `rupg-bench instructions` counts the instructions of each query, `rupg-bench tpch` runs TPC-H, and `rupg-bench ycsb` runs YCSB. The first milestone, M0, builds the harness and measures every baseline that a later gate uses. Every command below is the planned interface from the spec.
 
 ## The gates
 
@@ -38,7 +38,7 @@ G1 and G12 are compatibility gates and are decided in [rupg-compat](https://gith
 | ClickBench | our fork at `e6bda4e`, 43 queries, three runs each, with true cold runs | each result equals PostgreSQL 19's, floats within a relative 1e-9 |
 | TPC-H | `dbgen` 3.0.1 at SF1, SF10 and SF100, the 22 queries from `qgen -d` | the specification answer set at SF1, PostgreSQL 19 at SF10 and SF100 |
 | TPC-C | HammerDB TPROC-C, procedures and statements, two warehouse counts, 5 minutes ramp and 20 minutes measured | consistency conditions 1 to 4 of clause 3.3.2 |
-| YCSB | A, B, C and F, zipfian 0.99, 1 and 16 clients, and pipelined at a depth of 64 | each read returns the last acknowledged write |
+| YCSB | A, B, C and F, zipfian 0.99, 1 and 16 clients, and pipelined at a depth of 64 | each read returns one row of its key, each update changes one row, and after the run each updated field holds its last acknowledged write |
 | pgbench | a smoke test, never a gate | the balance sums and the history row count |
 | Connections | 100, 1,000 and 10,000 connections, 60 s idle | none |
 | Mixed | TPC-C with ClickBench on one server, and CH-benCHmark from M8 | the checks of each part |
@@ -81,7 +81,7 @@ cargo run --release -- machine up 4xl
 cargo run --release -- clickbench --machine 4xl --rows full
 cargo run --release -- tpch --scale 100 --machine tpch
 cargo run --release -- tpcc --form procedures --machine oltp
-cargo run --release -- ycsb --workload a --clients 16
+cargo run --release -- ycsb --unit postgresql@19-main --workloads a --rows 16
 cargo run --release -- connections --count 1000
 cargo run --release -- load --case a
 cargo run --release -- instructions
@@ -135,6 +135,12 @@ rupg-bench instructions --set clickbench --queries queries.sql --engine postgres
 ```sh
 rupg-bench tpch --tools tpch_tools_3.0.1/dbgen --scale 1 --data sf1 --duckdb sf1.db --answers tpch_tools_3.0.1/dbgen/answers
 rupg-bench tpch --tools tpch_tools_3.0.1/dbgen --scale 1 --data sf1 --engine postgresql --unit postgresql@19-main --answers tpch_tools_3.0.1/dbgen/answers
+```
+
+`rupg-bench ycsb` is the YCSB driver of spec/20 section 20.9. It follows the core workload of YCSB: the table `usertable` with ten text fields of 100 bytes, keys made from the FNV hash of the record number, and the scrambled zipfian distribution with the constant 0.99. The step `load` makes the table and loads `--records` rows with `COPY`, then runs `VACUUM ANALYZE` and `CHECKPOINT`. The step `run` runs each workload of `--workloads` (A, B, C and F) for each row of `--rows` for `--time` seconds. A row is a client count, such as `16`, or a client count and a pipeline depth, such as `16x64`. Each client has its own connection and thread, and sends prepared statements with the extended protocol. With a pipeline, up to that many statements wait for their results on each connection, each with its own Sync, as in the pipeline mode of `libpq`. The server cgroup is measured over each row, with the idle base first, so the result has the server CPU for each operation and `memory.peak`. It also has the throughput, the p50, p95, p99 and p99.9 latency of each operation, and the update rate of the hottest key. `--sync on` or `--sync off` sets `synchronous_commit` for each connection, for the two durability rows. Each read must return one row of its key, and each update must change one row. After each row the driver reads every field that the row updated, and the field must hold an update that no later acknowledged update replaced. A row that fails a check is a wrong answer and not a number.
+
+```sh
+rupg-bench ycsb --unit postgresql@19-main --records 1000000 --rows 1,16,16x64 --time 60 --sync on
 ```
 
 ## The reporting rules
