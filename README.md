@@ -158,6 +158,23 @@ PGVERSION=19 rupg-bench clickbench --dir cb/postgresql --engine postgresql --uni
 rupg-bench clickbench --dir cb/duckdb --engine duckdb --source hits.parquet --duckdb-bin /opt/rupg-bench/bin/duckdb --answers ans-pg
 ```
 
+The report of a YCSB run with `--sync` has the setting in its name, as in `ycsb-postgresql-sync-on`, and the report of a TPC-C run has the warehouse count, as in `tpcc-postgresql-w100`. So the runs of one suite do not write the same file.
+
+## The machine scripts
+
+The scripts in `machines/` start a machine, install the pins, run a suite and stop the machine. They read every version from `pins.toml`. Each install script in `machines/install/` checks the hash of what it downloads against the pin and checks the version that the program reports. `clickhouse.sh` copies the binary of the pinned release to `/opt/rupg-bench/bin`, and with `--system` it also runs `clickhouse install`, so the install script of the ClickBench pin finds `/usr/bin/clickhouse` and does not fetch the newest build. `sqlite.sh` checks the SHA3-256 hash that sqlite.org publishes. `umbra.sh` pulls the pinned image tag and stops if its digest is not the digest of `pins.toml`. The installer of CedarDB always installs the newest release, so `cedardb.sh` cannot pin it: it keeps the installer, records the version that the server reports and warns when that is not the pin. The licenses of Umbra and CedarDB are not verified, so their results are not published until they are. `harness.sh` builds `rupg-bench` with the pinned Rust.
+
+`machines/run-suite.sh SUITE [MACHINE]` runs on the machine itself. It builds the harness, installs what the suite needs and runs the driver, and the reports go to `reports/`. The suites are `pgbench`, `tpch`, `tpcc`, `ycsb`, `clickbench` and `fdatasync`. `fdatasync` runs `fio` with the settings of spec/20 section 20.2 and prints the p50, which decides if a machine can be `oltp`. `SMOKE=1` runs a tiny scale and marks every report as a smoke run. spec/20 leaves the TPC-C warehouse counts, the TPC-C virtual users and the YCSB record count to the choice at M0, so a full run stops until `WAREHOUSES`, `VU` and `RECORDS` are set. `SERVER_CPUS` puts the server in a `cpuset` and `CLIENT_CPUS` puts the driver on the other cores, as on `oltp`.
+
+`machines/instance.sh NAME SUITE [KEY=VALUE...]` starts the AWS machine `NAME` (`4xl`, `metal`, `tpch` or `oltp`) with Ubuntu 24.04 and a 500 GB gp2 root volume, copies the repository to it, runs `run-suite.sh` with the settings, copies the reports back and terminates the machine on exit, also after an error. It needs `AWS_REGION`, `KEY_NAME`, `SSH_KEY` and `SECURITY_GROUP`. The `oltp` machine and the `tpch` machine for SF100 are not chosen yet, so they need `INSTANCE_TYPE`, or `HOST` for a machine that exists. `DRY_RUN=1` prints the AWS command and stops.
+
+```sh
+machines/instance.sh 4xl clickbench
+machines/instance.sh tpch tpch SCALES="1 10"
+INSTANCE_TYPE=<type> machines/instance.sh oltp tpcc WAREHOUSES="<n> <4n>" VU=<v> SERVER_CPUS=0-15 CLIENT_CPUS=16-31
+HOST=root@server3 MACHINE=server3 machines/instance.sh 4xl pgbench SMOKE=1
+```
+
 ## The reporting rules
 
 1. A claim has five parts: one named machine, one metric, a baseline that we measured, the same transport on both sides, and the ratio. A claim without all five is not made.
@@ -179,7 +196,7 @@ pins.toml          versions of every system, the rupg commit
 src/               suite drivers, the cgroup runner, the report generator
 answers/           PostgreSQL 19 answers for ClickBench and TPC-H (the TPC-H SF1 set is fetched)
 clickbench/        the rupg directory of our ClickBench fork
-machines/          scripts for 4xl, metal, tpch, oltp and cluster
+machines/          the install scripts, run-suite.sh and instance.sh for 4xl, metal, tpch and oltp
 ratchet.toml       the instruction counts and the best number of each row
 reports/<date>/    <commit>-<machine>-<suite>.md and a JSON file for each run
 ```

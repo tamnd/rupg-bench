@@ -1061,7 +1061,12 @@ fn ycsb_command(mut a: args::Args) -> Result<(), String> {
             println!("{line}");
         }
     };
-    let meta = report::Meta::now(&format!("ycsb-{engine}"), machine, None, smoke);
+    // A run with --sync names its report after the setting, so the runs with on and off do not write the same file.
+    let name = match &sync {
+        Some(v) => format!("ycsb-{engine}-sync-{v}"),
+        None => format!("ycsb-{engine}"),
+    };
+    let meta = report::Meta::now(&name, machine, None, smoke);
     let mut result = meta.to_json();
     if smoke {
         result =
@@ -1323,7 +1328,8 @@ fn tpcc_command(mut a: args::Args) -> Result<(), String> {
             println!("{line}");
         }
     };
-    let meta = report::Meta::now("tpcc-postgresql", machine, None, smoke);
+    // The report names the warehouse count, because spec/20 section 20.8 runs two counts.
+    let meta = report::Meta::now(&format!("tpcc-postgresql-w{warehouses}"), machine, None, smoke);
     let mut result = meta.to_json();
     if smoke {
         result =
