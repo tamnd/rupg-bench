@@ -702,8 +702,11 @@ fn tpch_command(mut a: args::Args) -> Result<(), String> {
     let machine = a.value("machine");
     let (engine, target) = suite_target(&mut a)?;
     a.finish()?;
-    let tools = tpch::Tools::new(Path::new(&tools))?;
-    let data = Path::new(&data);
+    // dbgen and qgen run in other directories, so the paths must be absolute.
+    let absolute = |p: &str| std::path::absolute(p).map_err(|e| format!("{p}: {e}"));
+    let tools = tpch::Tools::new(&absolute(&tools)?)?;
+    let data = absolute(&data)?;
+    let data = data.as_path();
     let say = |line: &str| {
         if !json {
             println!("{line}");

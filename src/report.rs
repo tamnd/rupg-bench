@@ -119,8 +119,9 @@ pub(crate) fn write(root: &Path, result: &Json) -> Result<(PathBuf, PathBuf), St
     let stem = root.join(meta.stem());
     let dir = stem.parent().ok_or("a report path with no directory")?;
     fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let json = stem.with_extension("json");
-    let md = stem.with_extension("md");
+    // The suite name can have a dot, as in tpch-sf0.1-duckdb, so the extension is added and does not replace a part of the name.
+    let json = PathBuf::from(format!("{}.json", stem.display()));
+    let md = PathBuf::from(format!("{}.md", stem.display()));
     fs::write(&json, result.pretty()).map_err(|e| format!("{}: {e}", json.display()))?;
     fs::write(&md, markdown(result)?).map_err(|e| format!("{}: {e}", md.display()))?;
     Ok((md, json))
@@ -305,6 +306,15 @@ mod tests {
     fn the_name_of_a_report() {
         let m = Meta::from_json(&sample()).unwrap();
         assert_eq!(m.stem(), Path::new("2026-10-07/abc12345-server3-pgbench-smoke"));
+        let dotted = Meta { suite: "tpch-sf0.1-duckdb".to_owned(), smoke: false, ..m }.to_json();
+        let root = std::env::temp_dir().join(format!("rupg-bench-report-{}", std::process::id()));
+        let (md, json) = write(&root, &dotted).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        let names = [md, json].map(|p| p.file_name().unwrap().to_string_lossy().into_owned());
+        assert_eq!(
+            names,
+            ["abc12345-server3-tpch-sf0.1-duckdb.md", "abc12345-server3-tpch-sf0.1-duckdb.json"]
+        );
     }
 
     #[test]
