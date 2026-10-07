@@ -54,7 +54,7 @@ commands:
                               --conn takes libpq words: host, port, user, dbname, password (user=bench dbname=bench by default).
                               --report writes the report files under DIR (see report).
                               --smoke marks the result as a smoke run, which is not a baseline.
-  instructions --queries PATH --set NAME (--duckdb DB [--duckdb-bin B] [--threads N] | --unit UNIT | --attach PATH)
+  instructions --queries PATH --set NAME (--duckdb DB [--duckdb-bin B] [--threads N] | --engine NAME (--unit UNIT | --attach PATH))
           [--bin DIR] [--conn WORDS] [--repeat N] [--ratchet FILE] [--save FILE] [--smoke] [--json] [--report DIR [--machine M]]
                               count the instructions retired for each query with perf stat (spec/21 section 21.14).
                               PATH is a file with one query on each line or a directory of <name>.sql files.
@@ -508,6 +508,7 @@ fn instructions_command(mut a: args::Args) -> Result<(), String> {
     let conn = pg::Config::parse(
         &a.value("conn").unwrap_or_else(|| "user=bench dbname=bench".to_owned()),
     )?;
+    let engine_name = a.value("engine");
     let engine = if let Some(db) = a.value("duckdb") {
         let duckdb = a.value("duckdb-bin").unwrap_or_else(|| "duckdb".to_owned());
         let threads: u32 = number(&mut a, "threads", 1)?;
@@ -546,11 +547,24 @@ fn instructions_command(mut a: args::Args) -> Result<(), String> {
         instructions::Engine::Server { cgroup, client }
     };
     a.finish()?;
+    let engine_name = match (&engine, engine_name) {
+        (_, Some(n)) => n,
+        (instructions::Engine::InProcess(_), None) => "duckdb".to_owned(),
+        (instructions::Engine::Server { .. }, None) => {
+            return Err("usage: give --engine NAME for a server, for example postgresql".to_owned());
+        }
+    };
+    if !engine_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err(format!(
+            "usage: the engine name {engine_name:?} may have only letters, digits, _ and -"
+        ));
+    }
     let set = instructions::read_set(Path::new(&queries))?;
     if set.is_empty() {
         return Err(format!("{queries} has no query"));
     }
-    let meta = report::Meta::now(&format!("instructions-{set_name}"), machine, None, smoke);
+    let meta =
+        report::Meta::now(&format!("instructions-{set_name}-{engine_name}"), machine, None, smoke);
     let mut result = meta.to_json();
     if smoke {
         result =
@@ -558,6 +572,7 @@ fn instructions_command(mut a: args::Args) -> Result<(), String> {
     }
     result = result
         .with("set", set_name.as_str())
+        .with("engine_name", engine_name.as_str())
         .with("queries_from", queries.as_str())
         .with("repeat", repeat)
         .with(
@@ -570,7 +585,7 @@ fn instructions_command(mut a: args::Args) -> Result<(), String> {
             println!("{line}");
         }
     })?;
-    result = result.with("counts", counts.to_json());
+    result = result.with("counts", counts.to_json()).with("queries", counts.rows());
     let mut over = Vec::new();
     if let Some(file) = &ratchet {
         let text = std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;

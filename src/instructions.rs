@@ -154,8 +154,17 @@ impl Counts {
         self.queries.iter().map(|q| q.net).sum()
     }
 
+    /// The base and the total. The rows of the queries are in [`Counts::rows`].
     pub(crate) fn to_json(&self) -> Json {
-        let queries: Vec<Json> = self
+        Json::obj()
+            .with("base_runs", self.base.clone())
+            .with("base", self.base.iter().min().copied().unwrap_or(0))
+            .with("total_net", self.total())
+    }
+
+    /// One row for each query.
+    pub(crate) fn rows(&self) -> Json {
+        let rows: Vec<Json> = self
             .queries
             .iter()
             .map(|q| {
@@ -165,11 +174,7 @@ impl Counts {
                     .with("runs", q.runs.clone())
             })
             .collect();
-        Json::obj()
-            .with("base_runs", self.base.clone())
-            .with("base", self.base.iter().min().copied().unwrap_or(0))
-            .with("total_net", self.total())
-            .with("queries", queries)
+        Json::from(rows)
     }
 
     /// A table for `ratchet.toml`.

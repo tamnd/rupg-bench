@@ -123,11 +123,11 @@ rupg-bench report --result idle.json --suite idle-base --machine server3 --smoke
 rupg-bench pgbench --unit postgresql@19-main --scale 1 --clients 4 --time 30 --smoke --report reports --machine server3
 ```
 
-`rupg-bench instructions` is the instruction count runner of spec/21 section 21.14. It runs each query of a set under `perf stat -e instructions`. For DuckDB, perf counts the `duckdb` process with one thread. For a server, perf counts the cgroup of the server on all CPUs while `psql` sends the query, so the count is the work of the server and not the work of the client. Each query runs three times and the minimum counts. The count of `SELECT 1` in the same way is subtracted, so the net count is the work of the query. A set is a file with one query on each line, named `q0` to `q42` for ClickBench, or a directory of `<name>.sql` files. `--ratchet ratchet.toml` fails when one query rises by more than 3 percent or the total by more than 1 percent. `--save` writes the table for the ratchet. The ratchet is filled only on the dedicated runner, so [`ratchet.toml`](ratchet.toml) has no table yet.
+`rupg-bench instructions` is the instruction count runner of spec/21 section 21.14. It runs each query of a set under `perf stat -e instructions`. For DuckDB, perf counts the `duckdb` process with one thread. For a server, perf counts the cgroup of the server on all CPUs while `psql` sends the query, so the count is the work of the server and not the work of the client. Each query runs three times and the minimum counts. The count of `SELECT 1` in the same way is subtracted, so the net count is the work of the query. A set is a file with one query on each line, named `q0` to `q42` for ClickBench, or a directory of `<name>.sql` files. A server needs `--engine NAME`, and the report name has the set and the engine. `--ratchet ratchet.toml` fails when one query rises by more than 3 percent or the total by more than 1 percent. `--save` writes the table for the ratchet. The ratchet is filled only on the dedicated runner, so [`ratchet.toml`](ratchet.toml) has no table yet.
 
 ```sh
 rupg-bench instructions --set clickbench --queries queries.sql --duckdb hits.db --duckdb-bin duckdb
-rupg-bench instructions --set clickbench --queries queries.sql --unit postgresql@19-main --ratchet ratchet.toml
+rupg-bench instructions --set clickbench --queries queries.sql --engine postgresql --unit postgresql@19-main --ratchet ratchet.toml
 ```
 
 ## The reporting rules
