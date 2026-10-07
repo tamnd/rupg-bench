@@ -12,7 +12,7 @@ The procedure is [`spec/20-benchmarks.md`](https://github.com/tamnd/rupg/blob/ma
 
 ## Status
 
-Early. The crate builds and CI is green, but no suite runs yet. `rupg-bench gates` prints the twelve gates of spec/02 section 2.10, `rupg-bench pins` prints the pinned versions, `rupg-bench measure` runs the cgroup v2 runner, `rupg-bench load` runs the load cases, `rupg-bench answers` checks answer sets, `rupg-bench report` writes the report files, `rupg-bench pgbench` runs the pgbench smoke run with its check, and `rupg-bench instructions` counts the instructions of each query. The first milestone, M0, builds the harness and measures every baseline that a later gate uses. Every command below is the planned interface from the spec.
+Early. The crate builds and CI is green. TPC-H and pgbench run, and the other suites do not run yet. `rupg-bench gates` prints the twelve gates of spec/02 section 2.10, `rupg-bench pins` prints the pinned versions, `rupg-bench measure` runs the cgroup v2 runner, `rupg-bench load` runs the load cases, `rupg-bench answers` checks answer sets, `rupg-bench report` writes the report files, `rupg-bench pgbench` runs the pgbench smoke run with its check, `rupg-bench instructions` counts the instructions of each query, and `rupg-bench tpch` runs TPC-H. The first milestone, M0, builds the harness and measures every baseline that a later gate uses. Every command below is the planned interface from the spec.
 
 ## The gates
 
@@ -128,6 +128,13 @@ rupg-bench pgbench --unit postgresql@19-main --scale 1 --clients 4 --time 30 --s
 ```sh
 rupg-bench instructions --set clickbench --queries queries.sql --duckdb hits.db --duckdb-bin duckdb
 rupg-bench instructions --set clickbench --queries queries.sql --engine postgresql --unit postgresql@19-main --ratchet ratchet.toml
+```
+
+`rupg-bench tpch` is the TPC-H driver of spec/20 section 20.7. `machines/install/tpch-tools.sh` builds `dbgen` and `qgen` 3.0.1 from the pin. The step `gen` runs `dbgen` into the data directory and writes the 22 queries of `qgen -d` to `DATA/queries`. Q15 uses the approved variant A of the kit (a `WITH` clause in place of the view). The step `load` creates the 8 tables with the types, primary keys and foreign keys of the specification and loads the same `.tbl` files into each system. For a server it adds the keys after the rows, then runs `VACUUM ANALYZE` and `CHECKPOINT`. The step `run` runs each query 3 times. The first run is cold: the driver drops the page cache, and for a server it also restarts the unit. The hot time of a query is the smallest of the other runs. Each query runs in its own cgroup, or in the cgroup of the server unit, and the result has the counters of each run. `--answers` checks the answers against the `.out` files of the kit at SF1, or against `.tsv` files from `--save-answers` of another run.
+
+```sh
+rupg-bench tpch --tools tpch_tools_3.0.1/dbgen --scale 1 --data sf1 --duckdb sf1.db --answers tpch_tools_3.0.1/dbgen/answers
+rupg-bench tpch --tools tpch_tools_3.0.1/dbgen --scale 1 --data sf1 --engine postgresql --unit postgresql@19-main --answers tpch_tools_3.0.1/dbgen/answers
 ```
 
 ## The reporting rules

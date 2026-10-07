@@ -83,6 +83,108 @@ fn unescape(field: &str) -> Result<Option<String>, String> {
     Ok(Some(out))
 }
 
+/// Writes an answer in the `COPY` text format with a header line, so `parse_tsv` reads it back.
+pub(crate) fn to_tsv(answer: &Answer) -> String {
+    let mut out = String::new();
+    let line = |out: &mut String, fields: &mut dyn Iterator<Item = Option<&str>>| {
+        for (i, f) in fields.enumerate() {
+            if i > 0 {
+                out.push('\t');
+            }
+            match f {
+                None => out.push_str("\\N"),
+                Some(v) => {
+                    for c in v.chars() {
+                        match c {
+                            '\\' => out.push_str("\\\\"),
+                            '\t' => out.push_str("\\t"),
+                            '\n' => out.push_str("\\n"),
+                            '\r' => out.push_str("\\r"),
+                            c => out.push(c),
+                        }
+                    }
+                }
+            }
+        }
+        out.push('\n');
+    };
+    line(&mut out, &mut answer.columns.iter().map(|c| Some(c.as_str())));
+    for row in &answer.rows {
+        line(&mut out, &mut row.iter().map(Option::as_deref));
+    }
+    out
+}
+
+/// Reads CSV with a header line, as the `COPY ... (FORMAT csv, HEADER)` of DuckDB writes it. An empty field with no quotes is NULL, and `""` is the empty string, which is how DuckDB writes the two.
+pub(crate) fn parse_csv(text: &str) -> Result<Answer, String> {
+    let mut records = Vec::new();
+    let mut record: Vec<Option<String>> = Vec::new();
+    let mut field = String::new();
+    let mut quoted = false;
+    let mut chars = text.chars().peekable();
+    let mut in_quotes = false;
+    let mut at_start = true;
+    while let Some(c) = chars.next() {
+        if in_quotes {
+            if c == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    field.push('"');
+                } else {
+                    in_quotes = false;
+                }
+            } else {
+                field.push(c);
+            }
+            continue;
+        }
+        match c {
+            '"' if field.is_empty() && !quoted => {
+                in_quotes = true;
+                quoted = true;
+            }
+            ',' | '\n' => {
+                let value = std::mem::take(&mut field);
+                record.push(if value.is_empty() && !quoted { None } else { Some(value) });
+                quoted = false;
+                if c == '\n' {
+                    records.push(std::mem::take(&mut record));
+                }
+            }
+            '\r' if chars.peek() == Some(&'\n') => {}
+            c => field.push(c),
+        }
+        at_start = false;
+    }
+    if in_quotes {
+        return Err("a CSV field has no closing quote".to_owned());
+    }
+    if !at_start && (!field.is_empty() || quoted || !record.is_empty()) {
+        record.push(if field.is_empty() && !quoted { None } else { Some(field) });
+        records.push(record);
+    }
+    let mut records = records.into_iter();
+    let columns: Vec<String> = records
+        .next()
+        .ok_or("a CSV answer with no header")?
+        .into_iter()
+        .map(Option::unwrap_or_default)
+        .collect();
+    let mut rows = Vec::new();
+    for (i, row) in records.enumerate() {
+        if row.len() != columns.len() {
+            return Err(format!(
+                "CSV record {} has {} fields and the header has {}",
+                i + 2,
+                row.len(),
+                columns.len()
+            ));
+        }
+        rows.push(row);
+    }
+    Ok(Answer { columns, rows })
+}
+
 /// Reads a file of the TPC-H answer set, for example `dbgen/answers/q1.out`: a header line, then one line for each row, with `|` between the fields and spaces that pad them.
 pub(crate) fn parse_tpch(text: &str) -> Result<Answer, String> {
     let mut lines = text.lines().filter(|l| !l.trim().is_empty());
@@ -259,6 +361,23 @@ mod tests {
         assert_eq!(parse_tsv("k\tv\na\\tb\\\\c\\nd\t\\N\n\t\\\\N\n").unwrap(), a);
         assert!(parse_tsv("a\tb\n1\n").unwrap_err().contains("line 2 has 1 fields"));
         assert!(parse_tsv("a\n\\q\n").is_err());
+    }
+
+    #[test]
+    fn written_tsv_reads_back() {
+        let a = answer(&["k", "v"], &[&[Some("a\tb\\c\nd\r"), None], &[Some(""), Some("\\N")]]);
+        assert_eq!(to_tsv(&a), "k\tv\na\\tb\\\\c\\nd\\r\t\\N\n\t\\\\N\n");
+        assert_eq!(parse_tsv(&to_tsv(&a)).unwrap(), a);
+    }
+
+    #[test]
+    fn csv_files() {
+        let a = answer(&["k", "v w"], &[&[Some("a,\"b\"\nc"), None], &[Some(""), Some("1.5")]]);
+        assert_eq!(parse_csv("k,\"v w\"\n\"a,\"\"b\"\"\nc\",\n\"\",1.5\n").unwrap(), a);
+        assert_eq!(parse_csv("k,\"v w\"\r\n\"a,\"\"b\"\"\nc\",\r\n\"\",1.5").unwrap(), a);
+        assert!(parse_csv("a,b\n1\n").unwrap_err().contains("record 2 has 1 fields"));
+        assert!(parse_csv("a\n\"x\n").is_err());
+        assert_eq!(parse_csv("a\n").unwrap().rows.len(), 0);
     }
 
     #[test]
