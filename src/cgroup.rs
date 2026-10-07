@@ -14,7 +14,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
@@ -407,6 +407,26 @@ impl Usage {
 /// Bytes as MiB with two decimals, and the exact byte count.
 pub(crate) fn mib(bytes: u64) -> String {
     format!("{:.2} MiB ({bytes} bytes)", bytes as f64 / 1048576.0)
+}
+
+/// Runs `argv` and measures `cg` while it runs. In a cgroup that the harness created, the command is the system and runs in the cgroup, and every process left in the cgroup is killed at the end. In a cgroup that exists, the command is the client and runs outside it.
+pub(crate) fn run(cg: &Cgroup, argv: &[String]) -> Result<(ExitStatus, Usage), String> {
+    let mut cmd = if cg.owned() {
+        cg.command(argv)?
+    } else {
+        let (program, args) = argv.split_first().ok_or("no command to run")?;
+        let mut c = Command::new(program);
+        c.args(args);
+        c
+    };
+    let interval = Interval::start(cg)?;
+    let status = cmd.status().map_err(|e| format!("{}: {e}", argv[0]));
+    let usage = interval.finish()?;
+    let status = status?;
+    if cg.owned() {
+        cg.kill_all()?;
+    }
+    Ok((status, usage))
 }
 
 /// Measures the idle base: the cgroup with nothing to do for `duration`.

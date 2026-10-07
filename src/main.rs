@@ -4,9 +4,8 @@
 
 #![forbid(unsafe_code)]
 
-use std::process::ExitCode;
-
 use std::path::Path;
+use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::cgroup::Cgroup;
@@ -16,6 +15,7 @@ mod args;
 mod cgroup;
 mod gates;
 mod json;
+mod load;
 mod pins;
 mod toml;
 
@@ -30,6 +30,10 @@ commands:
                               --name starts COMMAND in the new cgroup /sys/fs/cgroup/rupg-bench/N.
                               --attach and --unit measure a cgroup that exists, such as a systemd unit,
                               while COMMAND (the client) runs outside it. --idle measures the idle base first (10 s by default).
+  load --case a|b --source FILE (--name N [--cpus LIST] | --attach PATH | --unit UNIT) [--du PATH] [--json] -- COMMAND...
+                              run the steps of case A or case B of spec/20 section 20.3.1 on FILE
+                              (drop_caches, fincore, the timed cat), then time COMMAND, the load,
+                              in the cgroup runner. Case A records L, R and L / R.
   --version                   print the version";
 
 fn main() -> ExitCode {
@@ -70,6 +74,7 @@ fn run(argv: &[String]) -> Result<(), String> {
             }
         }
         "measure" => measure(a)?,
+        "load" => load_command(a)?,
         "--version" | "-V" => println!("rupg-bench {}", env!("CARGO_PKG_VERSION")),
         "--help" | "-h" | "help" => println!("{USAGE}"),
         other => return Err(format!("usage: unknown command {other:?}\n{USAGE}")),
@@ -77,12 +82,91 @@ fn run(argv: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// The cgroup of `--name N [--cpus LIST]`, `--attach PATH` or `--unit UNIT`.
+fn target(a: &mut args::Args) -> Result<Cgroup, String> {
+    let cpus = a.value("cpus");
+    let cg = match (a.value("name"), a.value("attach"), a.value("unit")) {
+        (Some(n), None, None) => Cgroup::create(&n, cpus.as_deref())?,
+        (None, Some(p), None) => Cgroup::attach(Path::new(&p))?,
+        (None, None, Some(u)) => Cgroup::of_unit(&u)?,
+        _ => return Err("usage: give one of --name, --attach and --unit".to_owned()),
+    };
+    if cpus.is_some() && !cg.owned() {
+        return Err("usage: --cpus works only with --name".to_owned());
+    }
+    Ok(cg)
+}
+
+/// A result as JSON and as lines for a terminal.
+#[derive(Debug)]
+struct Out {
+    json: Json,
+    text: String,
+}
+
+impl Out {
+    fn new(cg: &Cgroup) -> Out {
+        let json = Json::obj()
+            .with("cgroup", cg.path.display().to_string())
+            .with(
+                "unix_time",
+                SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()),
+            )
+            .with(
+                "kernel",
+                std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default().trim(),
+            );
+        Out { json, text: format!("cgroup          {}\n", cg.path.display()) }
+    }
+
+    fn add(&mut self, key: &str, value: impl Into<Json>, text: &str) {
+        let json = std::mem::replace(&mut self.json, Json::Null);
+        self.json = json.with(key, value);
+        self.text.push_str(text);
+    }
+
+    fn print(&self, json: bool) {
+        if json {
+            print!("{}", self.json.pretty());
+        } else {
+            print!("{}", self.text);
+        }
+    }
+
+    /// Runs the command, adds its numbers and fails if it failed.
+    fn run(&mut self, cg: &Cgroup, argv: &[String]) -> Result<cgroup::Usage, String> {
+        let (status, usage) = cgroup::run(cg, argv)?;
+        self.add("command", argv.to_vec(), &format!("command         {}\n", argv.join(" ")));
+        self.add("exit_code", status.code().map(i64::from), &format!("exit            {status}\n"));
+        self.add("run", usage.to_json(), &usage.text());
+        if status.success() { Ok(usage) } else { Err(format!("the command failed: {status}")) }
+    }
+
+    fn du(&mut self, path: Option<String>) -> Result<(), String> {
+        if let Some(path) = path {
+            let bytes = cgroup::du_apparent(Path::new(&path))?;
+            let text = format!("du {path}  {}\n", cgroup::mib(bytes));
+            self.add("du", Json::obj().with("path", path).with("apparent_bytes", bytes), &text);
+        }
+        Ok(())
+    }
+}
+
+/// Runs `body`, prints the result, and removes the cgroup, also when `body` fails.
+fn with_cgroup(
+    cg: Cgroup,
+    json: bool,
+    body: impl FnOnce(&Cgroup, &mut Out) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut out = Out::new(&cg);
+    let result = body(&cg, &mut out);
+    out.print(json);
+    let removed = cg.remove();
+    result.and(removed)
+}
+
 /// The `measure` command.
 fn measure(mut a: args::Args) -> Result<(), String> {
-    let name = a.value("name");
-    let attach = a.value("attach");
-    let unit = a.value("unit");
-    let cpus = a.value("cpus");
     // --idle alone is the 10 s of spec/20 section 20.4.
     let idle = if a.flag("idle") {
         Some(cgroup::IDLE_BASE)
@@ -100,82 +184,55 @@ fn measure(mut a: args::Args) -> Result<(), String> {
     let du = a.value("du");
     let json = a.flag("json");
     let argv = std::mem::take(&mut a.rest);
+    let new = a.value_is_set("name");
+    if new && idle.is_some() {
+        return Err("usage: --idle needs --attach or --unit, because a new cgroup has nothing in it to measure".to_owned());
+    }
+    if new && argv.is_empty() {
+        return Err("usage: --name needs a command after --".to_owned());
+    }
+    let cg = target(&mut a)?;
     a.finish()?;
-    let cg = match (name, attach, unit) {
-        (Some(n), None, None) => {
-            if idle.is_some() {
-                return Err("usage: --idle needs --attach or --unit, because a new cgroup has nothing in it to measure".to_owned());
-            }
-            if argv.is_empty() {
-                return Err("usage: --name needs a command after --".to_owned());
-            }
-            Cgroup::create(&n, cpus.as_deref())?
+    with_cgroup(cg, json, |cg, out| {
+        if let Some(d) = idle {
+            let base = cgroup::idle_base(cg, d)?;
+            out.add(
+                "idle_base",
+                base.to_json(),
+                &format!("idle base over {} s:\n{}", d.as_secs_f64(), base.text()),
+            );
         }
-        (None, Some(p), None) => Cgroup::attach(Path::new(&p))?,
-        (None, None, Some(u)) => Cgroup::of_unit(&u)?,
-        _ => return Err("usage: give one of --name, --attach and --unit".to_owned()),
-    };
-    if cpus.is_some() && !cg.owned() {
-        return Err("usage: --cpus works only with --name".to_owned());
-    }
-    let mut out = Json::obj()
-        .with("cgroup", cg.path.display().to_string())
-        .with("unix_time", SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()))
-        .with(
-            "kernel",
-            std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default().trim(),
-        )
-        .with("cpus", cpus.clone());
-    let mut text = format!("cgroup          {}\n", cg.path.display());
-    if let Some(d) = idle {
-        let base = cgroup::idle_base(&cg, d)?;
-        text.push_str(&format!("idle base over {} s:\n{}", d.as_secs_f64(), base.text()));
-        out = out.with("idle_base", base.to_json());
-    }
-    if !argv.is_empty() {
-        // In a new cgroup the command is the system. With --attach or --unit the command is the client, and it runs outside the cgroup that is measured.
-        let mut cmd = if cg.owned() {
-            cg.command(&argv)?
-        } else {
-            let mut c = std::process::Command::new(&argv[0]);
-            c.args(&argv[1..]);
-            c
-        };
-        let interval = cgroup::Interval::start(&cg)?;
-        let status = cmd.status().map_err(|e| format!("{}: {e}", argv[0]));
-        let usage = interval.finish()?;
-        let status = status?;
-        text.push_str(&format!(
-            "command         {}\nexit            {status}\n{}",
-            argv.join(" "),
-            usage.text()
-        ));
-        out = out
-            .with("command", argv.clone())
-            .with("exit_code", status.code().map(i64::from))
-            .with("run", usage.to_json());
-        if cg.owned() {
-            cg.kill_all()?;
+        if !argv.is_empty() {
+            out.run(cg, &argv)?;
         }
-        if !status.success() {
-            emit(json, &out, &text);
-            cg.remove()?;
-            return Err(format!("the command failed: {status}"));
-        }
-    }
-    if let Some(path) = du {
-        let bytes = cgroup::du_apparent(Path::new(&path))?;
-        text.push_str(&format!("du {path}  {}\n", cgroup::mib(bytes)));
-        out = out.with("du", Json::obj().with("path", path).with("apparent_bytes", bytes));
-    }
-    emit(json, &out, &text);
-    cg.remove()
+        out.du(du)
+    })
 }
 
-fn emit(json: bool, out: &Json, text: &str) {
-    if json {
-        print!("{}", out.pretty());
-    } else {
-        print!("{text}");
+/// The `load` command: the steps of case A or case B of spec/20 section 20.3.1, then the load in the cgroup runner.
+fn load_command(mut a: args::Args) -> Result<(), String> {
+    let case =
+        load::Case::parse(&a.value("case").ok_or("usage: load needs --case a or --case b")?)?;
+    let source = a.value("source").ok_or("usage: load needs --source FILE")?;
+    let du = a.value("du");
+    let json = a.flag("json");
+    let argv = std::mem::take(&mut a.rest);
+    if argv.is_empty() {
+        return Err("usage: load needs the load command after --".to_owned());
     }
+    let cg = target(&mut a)?;
+    a.finish()?;
+    with_cgroup(cg, json, |cg, out| {
+        let source = Path::new(&source);
+        let prepared = load::prepare(source, case)?;
+        // The load starts right after the last check. spec/20 section 20.3.4 measures the resources over the load.
+        let usage = out.run(cg, &argv)?;
+        out.add(
+            "source",
+            source.display().to_string(),
+            &format!("source          {}\n", source.display()),
+        );
+        out.add("load_case", prepared.to_json(Some(usage.wall)), &prepared.text(usage.wall));
+        out.du(du)
+    })
 }
