@@ -1,0 +1,79 @@
+# The version of every system that a run uses. See spec/20 section 20.1 and spec/03 section 3.14 of tamnd/rupg.
+#
+# Each result records these values next to the version string that the system reports. A pin moves only in its own change, and the next gate run measures every baseline again.
+# The versions were looked up on 7 October 2026 from the release pages and the repositories named below.
+
+[clickbench]
+repo = "https://github.com/ClickHouse/ClickBench"
+commit = "e6bda4e229d7ba3543662eec26fbf514cb3fe935"
+date = "2026-10-06"
+
+[postgresql]
+repo = "https://github.com/postgres/postgres"
+branch = "REL_19_STABLE"
+commit = "7d3d2db7d5e533fa42a4202c7d308cbb0cbf9333"
+version = "19beta4"
+note = "Built from source at the commit. RC1 and 19.0 do not exist on 7 October 2026. The pin moves to each of them with a full rerun."
+
+[rudb]
+repo = "https://github.com/tamnd/rudb"
+commit = "cd9f9676fde33e34e119d99db714ccf140605dff"
+date = "2026-10-05"
+
+[rupg]
+repo = "https://github.com/tamnd/rupg"
+commit = ""
+note = "Empty until rupg has a server to run (M2)."
+
+[clickhouse]
+version = "26.9.12.8"
+tag = "v26.9.12.8-stable"
+date = "2026-10-06"
+url = "https://github.com/ClickHouse/ClickHouse/releases/download/v26.9.12.8-stable/clickhouse-common-static-26.9.12.8-amd64.tgz"
+sha256 = "87092323075b364685b4c15d4a764d96251654861714e3407678a00ae9a2f1f9"
+note = "The newest release of the newest stable line on 7 October 2026."
+
+[duckdb]
+version = "1.5.6"
+tag = "v1.5.6"
+date = "2026-09-28"
+url = "https://github.com/duckdb/duckdb/releases/download/v1.5.6/duckdb_cli-linux-amd64.gz"
+sha256 = "cce2687a38681db644c248198b99ecd86170ff47e324c5f33e50c0042f142839"
+note = "spec/03 names 2.0.0, which is planned for 21 October 2026. 1.5.6 is the newest release on 7 October 2026."
+
+[umbra]
+version = "26.09"
+image = "umbradb/umbra:26.09"
+date = "2026-09-18"
+license = "unverified"
+note = "The image that the ClickBench pin pulls. A row is published only when the license permits a published comparison."
+
+[cedardb]
+version = "v2026-09-29"
+date = "2026-09-29"
+license = "unverified"
+note = "The newest entry in the release notes of cedardb/docs on 7 October 2026. The installer of the ClickBench pin fetches the newest release, so the run records the version that it got."
+
+[sqlite]
+version = "3.53.4"
+date = "2026-07-24"
+url = "https://www.sqlite.org/2026/sqlite-tools-linux-x64-3530400.zip"
+sha3_256 = "6eeb57e8f2aef7687f9f016a980992cf2799c8c07a87c5e21495530f91915047"
+note = "spec/03 names 3.53.1. 3.53.4 is the newest release on 7 October 2026."
+
+[hammerdb]
+version = "6.0"
+tag = "v6.0"
+date = "2026-06-26"
+url = "https://github.com/TPC-Council/HammerDB/releases/download/v6.0/HammerDB-6.0-Prod-Lin-UBU24.tar.gz"
+sha256 = "6e0b94724356f35f60760fdcacd0b19de655ec0477383d59e585a7235c4d4a58"
+
+[tpch_tools]
+version = "3.0.1"
+repo = "https://github.com/duckdb/duckdb-tpch"
+commit = "0743d9b3e8b07eb2fef77888776fc8ee97db1137"
+path = "tpch_tools_3.0.1"
+note = "The TPC-H tools are under the TPC EULA. The harness fetches them at run time and does not copy them into this repository. release.h in this copy says 3.0.0."
+
+[rust]
+version = "1.98.0"
