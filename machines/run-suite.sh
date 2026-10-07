@@ -163,6 +163,10 @@ clickbench)
     cp -r "$src/lib" "$run/lib"
     answers=$run/answers-postgresql
     first=yes
+    # The concurrent test of the pin runs for 600 s. A smoke run shortens it to 60 s unless the setting is in the environment.
+    if [ "$smoke" = 1 ]; then
+        export BENCH_CONCURRENT_DURATION=${BENCH_CONCURRENT_DURATION:-60}
+    fi
     for engine in $engines; do
         rm -rf "${run:?}/$engine"
         cp -r "$src/$engine" "$run/$engine"
