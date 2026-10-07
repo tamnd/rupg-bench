@@ -16,7 +16,9 @@ if [ "$(id -u)" -ne 0 ]; then
     exec sudo -E -H "$0" "$@"
 fi
 
-[ $# -ge 1 ] && [ $# -le 2 ] || die "usage: run-suite.sh SUITE [MACHINE]"
+if [ $# -lt 1 ] || [ $# -gt 2 ]; then
+    die "usage: run-suite.sh SUITE [MACHINE]"
+fi
 suite=$1
 machine=${2:-$(hostname -s)}
 smoke=${SMOKE:-0}
