@@ -511,7 +511,7 @@ fn parse_pss(text: &str) -> Option<u64> {
     Some(kb * 1024)
 }
 
-fn pss_of(pid: u32) -> Option<u64> {
+pub(crate) fn pss_of(pid: u32) -> Option<u64> {
     // A process that exits between the read of cgroup.procs and this read counts as zero.
     parse_pss(&fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).ok()?)
 }

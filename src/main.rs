@@ -15,7 +15,9 @@ mod answers;
 mod args;
 mod cgroup;
 mod clickbench;
+mod connect;
 mod gates;
+mod idle;
 mod instructions;
 mod json;
 mod load;
@@ -60,6 +62,19 @@ commands:
                               --conn takes libpq words: host, port, user, dbname, password (user=bench dbname=bench by default).
                               --report writes the report files under DIR (see report).
                               --smoke marks the result as a smoke run, which is not a baseline.
+  idle (--unit UNIT | --attach PATH | --pid PID) [--conn WORDS] [--sessions N] [--variant plain|discard|prepare]
+          [--settle SECONDS] [--check] [--commit C] [--smoke] [--json] [--report DIR [--machine M]]
+                              the idle session test of spec/06 section 6.4: open --sessions (1,000) connections that wait
+                              in the state Idle, and divide the change of the sum of Pss of the server processes by the
+                              sessions. --pid measures a process and the processes below it, such as a postmaster.
+                              A cgroup also gives memory.current, with the kernel memory of the sockets. discard sends
+                              DISCARD ALL on each connection, and prepare prepares a statement and drops it. Each end
+                              waits --settle seconds (5) first. --check fails when a session costs more than 64 KiB.
+  connect [--conn WORDS] [--clients N] [--time SECONDS] [--commit C] [--smoke] [--json] [--report DIR [--machine M]]
+                              the connection rate of spec/06 section 6.18: --clients (4) threads each open a connection,
+                              wait for ReadyForQuery, send Terminate and close, again and again for --time seconds (10).
+                              The result has the connections a second and the latency of the startup. The server must
+                              allow the user with trust.
   instructions --queries PATH --set NAME (--duckdb DB [--duckdb-bin B] [--threads N] | --engine NAME (--unit UNIT | --attach PATH))
           [--bin DIR] [--conn WORDS] [--password-file F] [--repeat N] [--ratchet FILE] [--save FILE] [--smoke] [--json] [--report DIR [--machine M]]
                               count the instructions retired for each query with perf stat (spec/21 section 21.14).
@@ -163,6 +178,8 @@ fn run(argv: &[String]) -> Result<(), String> {
         "tpch" => tpch_command(a)?,
         "clickbench" => clickbench_command(a)?,
         "pgbench" => pgbench_command(a)?,
+        "idle" => idle_command(a)?,
+        "connect" => connect_command(a)?,
         "ycsb" => ycsb_command(a)?,
         "tpcc" => tpcc_command(a)?,
         "fixed-set" => fixed_set_command(a)?,
@@ -199,8 +216,15 @@ struct Out {
 
 impl Out {
     fn new(cg: &Cgroup) -> Out {
+        let mut out = Out::bare();
+        let path = cg.path.display().to_string();
+        out.add("cgroup", path.as_str(), &format!("cgroup          {path}\n"));
+        out
+    }
+
+    /// A result that does not name a cgroup.
+    fn bare() -> Out {
         let json = Json::obj()
-            .with("cgroup", cg.path.display().to_string())
             .with(
                 "unix_time",
                 SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()),
@@ -209,7 +233,7 @@ impl Out {
                 "kernel",
                 std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default().trim(),
             );
-        Out { json, text: format!("cgroup          {}\n", cg.path.display()) }
+        Out { json, text: String::new() }
     }
 
     fn add(&mut self, key: &str, value: impl Into<Json>, text: &str) {
@@ -579,6 +603,117 @@ fn pgbench_command(mut a: args::Args) -> Result<(), String> {
         }
         result
     })
+}
+
+/// The `idle` command.
+fn idle_command(mut a: args::Args) -> Result<(), String> {
+    let conn = pg::Config::parse(
+        &a.value("conn").unwrap_or_else(|| "user=bench dbname=bench".to_owned()),
+    )?;
+    let sessions: u64 = number(&mut a, "sessions", 1000)?;
+    let variant = idle::Variant::parse(&a.value("variant").unwrap_or_else(|| "plain".to_owned()))?;
+    let settle: u64 = number(&mut a, "settle", 5)?;
+    let check = a.flag("check");
+    let commit = a.value("commit");
+    let smoke = a.flag("smoke");
+    let json = a.flag("json");
+    let report_dir = a.value("report");
+    let machine = a.value("machine");
+    if a.value_is_set("name") {
+        return Err(
+            "usage: idle measures a running server, so give --unit, --attach or --pid".to_owned()
+        );
+    }
+    let server = match a.value("pid") {
+        Some(p) => idle::Server::Pid(
+            p.parse().map_err(|_| format!("usage: the pid {p:?} is not a number"))?,
+        ),
+        None => idle::Server::Cgroup(target(&mut a)?),
+    };
+    a.finish()?;
+    if sessions == 0 {
+        return Err("usage: --sessions must be at least 1".to_owned());
+    }
+    let mut out = Out::bare();
+    header(&mut out, &report::Meta::now("idle", machine, commit, smoke));
+    let described = server.describe();
+    out.add("server", described.as_str(), &format!("server          {described}\n"));
+    out.add("variant", variant.name(), &format!("variant         {}\n", variant.name()));
+    let result = idle::run(&server, &conn, sessions, variant, Duration::from_secs(settle));
+    match &result {
+        Ok(m) => out.add("idle", m.to_json(), &m.text()),
+        Err(e) => out.add("error", e.as_str(), ""),
+    }
+    // A failed run gets a report too, with its error.
+    write_report(&mut out, report_dir.as_deref())?;
+    out.print(json);
+    if let idle::Server::Cgroup(cg) = server {
+        cg.remove()?;
+    }
+    let m = result?;
+    if check && !m.passes() {
+        return Err(format!(
+            "an idle session costs {} bytes, over the limit of {} bytes",
+            m.pss_per_session(),
+            idle::LIMIT
+        ));
+    }
+    Ok(())
+}
+
+/// The header of the result of a command that measures a server with no cgroup.
+fn header(out: &mut Out, meta: &report::Meta) {
+    out.add("suite", meta.suite.as_str(), &format!("suite           {}\n", meta.suite));
+    out.add("machine", meta.machine.as_str(), &format!("machine         {}\n", meta.machine));
+    out.add("date", meta.date.as_str(), &format!("date            {}\n", meta.date));
+    out.add("commit", meta.commit.as_str(), &format!("commit          {}\n", meta.commit));
+    let note = if meta.smoke {
+        "smoke run: it shows that the driver works, it is not a baseline\n"
+    } else {
+        ""
+    };
+    out.add("smoke", meta.smoke, note);
+}
+
+/// Writes the report of a result under `dir`, when it is given.
+fn write_report(out: &mut Out, dir: Option<&str>) -> Result<(), String> {
+    if let Some(dir) = dir {
+        let (md, json) = report::write(Path::new(dir), &out.json)?;
+        let text = format!("report          {}\n                {}\n", md.display(), json.display());
+        out.add("report", md.display().to_string(), &text);
+    }
+    Ok(())
+}
+
+/// The `connect` command.
+fn connect_command(mut a: args::Args) -> Result<(), String> {
+    let conn = pg::Config::parse(
+        &a.value("conn").unwrap_or_else(|| "user=bench dbname=bench".to_owned()),
+    )?;
+    let clients: u32 = number(&mut a, "clients", 4)?;
+    let time: u64 = number(&mut a, "time", 10)?;
+    let commit = a.value("commit");
+    let smoke = a.flag("smoke");
+    let json = a.flag("json");
+    let report_dir = a.value("report");
+    let machine = a.value("machine");
+    a.finish()?;
+    if clients == 0 || time == 0 {
+        return Err("usage: --clients and --time must be at least 1".to_owned());
+    }
+    let mut out = Out::bare();
+    header(&mut out, &report::Meta::now("connect", machine, commit, smoke));
+    let target = format!("{} port {} user {}", conn.host, conn.port, conn.user);
+    out.add("server", target.as_str(), &format!("server          {target}\n"));
+    let result = connect::run(&conn, clients, Duration::from_secs(time));
+    match &result {
+        Ok(r) => out.add("connect", r.to_json(), &r.text()),
+        Err(e) => out.add("error", e.as_str(), ""),
+    }
+    // A failed run gets a report too, with its error.
+    write_report(&mut out, report_dir.as_deref())?;
+    out.print(json);
+    result.map(drop)
 }
 
 /// The steps of the `pgbench` command after the header of the result.
