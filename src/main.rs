@@ -62,7 +62,7 @@ commands:
                               --conn takes libpq words: host, port, user, dbname, password (user=bench dbname=bench by default).
                               --report writes the report files under DIR (see report).
                               --smoke marks the result as a smoke run, which is not a baseline.
-  idle (--unit UNIT | --attach PATH | --pid PID) [--conn WORDS] [--sessions N] [--variant plain|discard|prepare]
+  idle (--unit UNIT | --attach PATH | --pid PID) [--engine NAME] [--conn WORDS] [--sessions N] [--variant plain|discard|prepare]
           [--settle SECONDS] [--check] [--commit C] [--smoke] [--json] [--report DIR [--machine M]]
                               the idle session test of spec/06 section 6.4: open --sessions (1,000) connections that wait
                               in the state Idle, and divide the change of the sum of Pss of the server processes by the
@@ -70,11 +70,12 @@ commands:
                               A cgroup also gives memory.current, with the kernel memory of the sockets. discard sends
                               DISCARD ALL on each connection, and prepare prepares a statement and drops it. Each end
                               waits --settle seconds (5) first. --check fails when a session costs more than 64 KiB.
-  connect [--conn WORDS] [--clients N] [--time SECONDS] [--commit C] [--smoke] [--json] [--report DIR [--machine M]]
+                              --engine (rupg) names the server in the suite, as in idle-postgresql-plain.
+  connect [--engine NAME] [--conn WORDS] [--clients N] [--time SECONDS] [--commit C] [--smoke] [--json] [--report DIR [--machine M]]
                               the connection rate of spec/06 section 6.18: --clients (4) threads each open a connection,
                               wait for ReadyForQuery, send Terminate and close, again and again for --time seconds (10).
                               The result has the connections a second and the latency of the startup. The server must
-                              allow the user with trust.
+                              allow the user with trust. --engine (rupg) names the server in the suite, as in connect-rupg.
   instructions --queries PATH --set NAME (--duckdb DB [--duckdb-bin B] [--threads N] | --engine NAME (--unit UNIT | --attach PATH))
           [--bin DIR] [--conn WORDS] [--password-file F] [--repeat N] [--ratchet FILE] [--save FILE] [--smoke] [--json] [--report DIR [--machine M]]
                               count the instructions retired for each query with perf stat (spec/21 section 21.14).
@@ -613,6 +614,7 @@ fn idle_command(mut a: args::Args) -> Result<(), String> {
     let sessions: u64 = number(&mut a, "sessions", 1000)?;
     let variant = idle::Variant::parse(&a.value("variant").unwrap_or_else(|| "plain".to_owned()))?;
     let settle: u64 = number(&mut a, "settle", 5)?;
+    let engine = a.value("engine").unwrap_or_else(|| "rupg".to_owned());
     let check = a.flag("check");
     let commit = a.value("commit");
     let smoke = a.flag("smoke");
@@ -635,7 +637,8 @@ fn idle_command(mut a: args::Args) -> Result<(), String> {
         return Err("usage: --sessions must be at least 1".to_owned());
     }
     let mut out = Out::bare();
-    header(&mut out, &report::Meta::now("idle", machine, commit, smoke));
+    let suite = format!("idle-{engine}-{}", variant.name());
+    header(&mut out, &report::Meta::now(&suite, machine, commit, smoke));
     let described = server.describe();
     out.add("server", described.as_str(), &format!("server          {described}\n"));
     out.add("variant", variant.name(), &format!("variant         {}\n", variant.name()));
@@ -679,7 +682,8 @@ fn header(out: &mut Out, meta: &report::Meta) {
 fn write_report(out: &mut Out, dir: Option<&str>) -> Result<(), String> {
     if let Some(dir) = dir {
         let (md, json) = report::write(Path::new(dir), &out.json)?;
-        let text = format!("report          {}\n                {}\n", md.display(), json.display());
+        let text =
+            format!("report          {}\n                {}\n", md.display(), json.display());
         out.add("report", md.display().to_string(), &text);
     }
     Ok(())
@@ -692,6 +696,7 @@ fn connect_command(mut a: args::Args) -> Result<(), String> {
     )?;
     let clients: u32 = number(&mut a, "clients", 4)?;
     let time: u64 = number(&mut a, "time", 10)?;
+    let engine = a.value("engine").unwrap_or_else(|| "rupg".to_owned());
     let commit = a.value("commit");
     let smoke = a.flag("smoke");
     let json = a.flag("json");
@@ -702,7 +707,7 @@ fn connect_command(mut a: args::Args) -> Result<(), String> {
         return Err("usage: --clients and --time must be at least 1".to_owned());
     }
     let mut out = Out::bare();
-    header(&mut out, &report::Meta::now("connect", machine, commit, smoke));
+    header(&mut out, &report::Meta::now(&format!("connect-{engine}"), machine, commit, smoke));
     let target = format!("{} port {} user {}", conn.host, conn.port, conn.user);
     out.add("server", target.as_str(), &format!("server          {target}\n"));
     let result = connect::run(&conn, clients, Duration::from_secs(time));

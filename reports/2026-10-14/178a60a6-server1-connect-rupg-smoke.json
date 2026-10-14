@@ -1,0 +1,25 @@
+{
+  "unix_time": 1791983923,
+  "kernel": "6.8.0-101-generic",
+  "suite": "connect-rupg",
+  "machine": "server1",
+  "date": "2026-10-14",
+  "commit": "178a60a6",
+  "smoke": true,
+  "server": "/tmp port 55441 user postgres",
+  "connect": {
+    "clients": 4,
+    "seconds": 30.005178358,
+    "connections": 54571,
+    "connections_per_second": 1818.7,
+    "latency": {
+      "count": 54571,
+      "mean_us": 2195.8,
+      "p50_us": 1081.3,
+      "p95_us": 7110.7,
+      "p99_us": 22151.2,
+      "p999_us": 46661.6,
+      "max_us": 131625.5
+    }
+  }
+}

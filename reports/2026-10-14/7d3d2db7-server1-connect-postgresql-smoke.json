@@ -1,0 +1,25 @@
+{
+  "unix_time": 1791983953,
+  "kernel": "6.8.0-101-generic",
+  "suite": "connect-postgresql",
+  "machine": "server1",
+  "date": "2026-10-14",
+  "commit": "7d3d2db7",
+  "smoke": true,
+  "server": "/home/tam/work/pg19-oracle/sock port 54419 user postgres",
+  "connect": {
+    "clients": 4,
+    "seconds": 30.027742724,
+    "connections": 6682,
+    "connections_per_second": 222.5,
+    "latency": {
+      "count": 6682,
+      "mean_us": 17956.3,
+      "p50_us": 12320.8,
+      "p95_us": 48234.5,
+      "p99_us": 76021.8,
+      "p999_us": 153092.1,
+      "max_us": 194393.5
+    }
+  }
+}
