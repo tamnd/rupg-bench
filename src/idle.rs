@@ -2,7 +2,7 @@
 //!
 //! The test opens `--sessions` connections. Each connection completes the startup and then waits in the state `Idle`. The test reads the memory of the server before the first connection and after the last one, and divides the change by the number of sessions. The memory is the sum of `Pss` in `/proc/<pid>/smaps_rollup` over the processes of the server: the processes of a cgroup, or a process and the processes below it. For a cgroup the test also reads `memory.current`, which also counts the kernel memory of the sockets, and publishes that number next to the first one. The limit of spec/06 section 6.4 is 64 KiB for each session.
 //!
-//! The variant `plain` only connects. The variant `discard` sends `DISCARD ALL` on each connection. The variant `prepare` prepares a statement and drops it on each connection, as spec/21 section 21.13 asks. The client of the harness has no TLS and no SCRAM, so the variants with TLS of spec/06 section 6.4.3 are not here yet.
+//! The variant `plain` only connects. The variant `discard` sends `DISCARD ALL` on each connection. The variant `prepare` prepares a statement and drops it on each connection, as spec/21 section 21.13 asks. The four variants of spec/06 section 6.4.3 come from `--conn`: `plain` over a Unix socket, `plain` over TCP, `plain` with `sslmode=require`, and `discard` with `sslmode=require` and a password for `scram-sha-256`. With TLS the name of the suite ends with `-tls`.
 
 use std::collections::BTreeMap;
 use std::fs;

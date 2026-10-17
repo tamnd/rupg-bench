@@ -1,6 +1,6 @@
 //! The connection rate of spec/06 section 6.18 of tamnd/rupg.
 //!
-//! Each of `--clients` threads opens a connection, reads the messages of the server until `ReadyForQuery`, sends `Terminate` and closes the socket. It does this again and again for `--time` seconds. The rate is the count of connections that got to `ReadyForQuery`, divided by the time. The result also has the p50, p99 and p99.9 of the time from the connect call to `ReadyForQuery`. The client sends one startup message and reads with one small buffer, so most of the time is the work of the server. The target of M2 is at least 10x the rate of PostgreSQL 19 with `trust` over a Unix socket. The client has no TLS and no SCRAM, so the target with SCRAM over TLS is not here yet.
+//! Each of `--clients` threads opens a connection, reads the messages of the server until `ReadyForQuery`, sends `Terminate` and closes the socket. It does this again and again for `--time` seconds. The rate is the count of connections that got to `ReadyForQuery`, divided by the time. The result also has the p50, p99 and p99.9 of the time from the connect call to `ReadyForQuery`. The client sends one startup message and reads with one small buffer, so most of the time is the work of the server. The target of M2 is at least 10x the rate of PostgreSQL 19 with `trust` over a Unix socket. With `sslmode=require` or a password in `--conn`, each connection goes through the full client of `pg.rs`, with TLS and SCRAM-SHA-256, as the second target of section 6.18 asks.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -86,7 +86,11 @@ fn talk<S: Read + Write>(mut s: S, startup: &[u8], buf: &mut Vec<u8>) -> Result<
 }
 
 fn once(c: &pg::Config, startup: &[u8], buf: &mut Vec<u8>) -> Result<(), String> {
-    if c.host.starts_with('/') {
+    if c.tls || c.password.is_some() {
+        // The drop of the connection sends Terminate.
+        pg::Conn::connect(c)?;
+        Ok(())
+    } else if c.host.starts_with('/') {
         let path = format!("{}/.s.PGSQL.{}", c.host, c.port);
         let s = UnixStream::connect(&path).map_err(|e| format!("{path}: {e}"))?;
         talk(s, startup, buf)

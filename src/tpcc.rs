@@ -215,6 +215,7 @@ impl Server {
             user: user.to_owned(),
             dbname: dbname.to_owned(),
             password: Some(self.password.clone()),
+            tls: false,
         }
     }
 
