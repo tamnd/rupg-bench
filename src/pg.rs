@@ -233,7 +233,7 @@ impl ServerCertVerifier for AnyCertificate {
     }
 }
 
-/// The TLS configuration of every connection, with the ALPN name `postgresql` that `libpq` sends.
+/// The TLS configuration of every connection, with the ALPN name `postgresql` that `libpq` sends. `libpq` does not resume a TLS session, so this client does not either, and each connection has a full handshake.
 fn tls_config() -> Result<Arc<ClientConfig>, PgError> {
     static CONFIG: OnceLock<Result<Arc<ClientConfig>, String>> = OnceLock::new();
     CONFIG
@@ -247,6 +247,7 @@ fn tls_config() -> Result<Arc<ClientConfig>, PgError> {
                 .with_custom_certificate_verifier(verifier)
                 .with_no_client_auth();
             config.alpn_protocols = vec![b"postgresql".to_vec()];
+            config.resumption = rustls::client::Resumption::disabled();
             Ok(Arc::new(config))
         })
         .clone()
