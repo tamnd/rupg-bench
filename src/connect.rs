@@ -1,7 +1,10 @@
 //! The connection rate of spec/06 section 6.18 of tamnd/rupg.
 //!
 //! Each of `--clients` threads opens a connection, reads the messages of the server until `ReadyForQuery`, sends `Terminate` and closes the socket. It does this again and again for `--time` seconds. The rate is the count of connections that got to `ReadyForQuery`, divided by the time. The result also has the p50, p99 and p99.9 of the time from the connect call to `ReadyForQuery`. The client sends one startup message and reads with one small buffer, so most of the time is the work of the server. The target of M2 is at least 10x the rate of PostgreSQL 19 with `trust` over a Unix socket. With `sslmode=require` or a password in `--conn`, each connection goes through the full client of `pg.rs`, with TLS and SCRAM-SHA-256, as the second target of section 6.18 asks.
+//!
+//! The rate also depends on the client when the client runs on the same machine, because the client uses the same cores. With `--pid` the result also has the server CPU for each connection, which does not depend on the client. It is the change of the CPU time of the process and the processes below it, divided by the connections. A backend of PostgreSQL that ends goes into the CPU time of the postmaster when the postmaster reaps it, so the test waits for one second after the last connection.
 
+use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::os::unix::net::UnixStream;
@@ -11,8 +14,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::json::Json;
-use crate::pg;
 use crate::ycsb::Histogram;
+use crate::{idle, pg};
 
 /// The startup message of protocol 3.0 for the user and the database of the configuration.
 fn startup(c: &pg::Config) -> Vec<u8> {
@@ -110,6 +113,8 @@ pub(crate) struct Rate {
     pub(crate) connections: u64,
     /// The time from the connect call to `ReadyForQuery`, in nanoseconds.
     pub(crate) latency: Histogram,
+    /// The CPU time of the server over the run, with `--pid`.
+    pub(crate) server_cpu: Option<Duration>,
 }
 
 impl Rate {
@@ -117,13 +122,26 @@ impl Rate {
         if self.seconds > 0.0 { self.connections as f64 / self.seconds } else { 0.0 }
     }
 
+    /// The server CPU for each connection, in microseconds.
+    pub(crate) fn server_us(&self) -> Option<f64> {
+        let cpu = self.server_cpu?;
+        (self.connections > 0).then(|| cpu.as_secs_f64() * 1e6 / self.connections as f64)
+    }
+
     pub(crate) fn to_json(&self) -> Json {
-        Json::obj()
+        let mut j = Json::obj()
             .with("clients", self.clients)
             .with("seconds", self.seconds)
             .with("connections", self.connections)
             .with("connections_per_second", (self.per_second() * 10.0).round() / 10.0)
-            .with("latency", self.latency.to_json())
+            .with("latency", self.latency.to_json());
+        if let Some(cpu) = self.server_cpu {
+            j = j.with("server_cpu_seconds", cpu.as_secs_f64());
+        }
+        if let Some(us) = self.server_us() {
+            j = j.with("server_cpu_us_per_connection", (us * 10.0).round() / 10.0);
+        }
+        j
     }
 
     pub(crate) fn text(&self) -> String {
@@ -137,13 +155,47 @@ impl Rate {
             us(0.50),
             us(0.99),
             us(0.999),
-        )
+        ) + &self
+            .server_us()
+            .map(|us| format!("server cpu      {us:.1} us for each connection\n"))
+            .unwrap_or_default()
     }
 }
 
-/// Runs `clients` threads for `time`. The first error stops every thread and is the result.
-pub(crate) fn run(c: &pg::Config, clients: u32, time: Duration) -> Result<Rate, String> {
+/// The clock ticks of a second in `/proc/<pid>/stat`. Linux gives these times in `USER_HZ`, which is 100 on each architecture that the harness runs on.
+const TICKS_PER_SECOND: u64 = 100;
+
+/// The fields `utime`, `stime`, `cutime` and `cstime` of the text of `/proc/<pid>/stat`, in ticks. The fields count from the last `)`, because the name of the program can hold spaces.
+fn stat_ticks(stat: &str) -> Option<u64> {
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().skip(11).take(4).map(|v| v.parse::<u64>().ok()).sum()
+}
+
+/// The CPU time of `root` and the processes below it, with the processes that ended and that a process of the tree reaped.
+pub(crate) fn tree_cpu(root: u32) -> Result<Duration, String> {
+    let mut ticks = 0;
+    for pid in idle::tree(root) {
+        // A process that ends before this read is not counted until its parent reaps it.
+        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            if pid == root {
+                return Err(format!("the process {root} does not exist"));
+            }
+            continue;
+        };
+        ticks += stat_ticks(&stat).ok_or_else(|| format!("/proc/{pid}/stat is not valid"))?;
+    }
+    Ok(Duration::from_millis(ticks * 1000 / TICKS_PER_SECOND))
+}
+
+/// Runs `clients` threads for `time`. The first error stops every thread and is the result. With `server`, the result has the CPU time of that process and the processes below it.
+pub(crate) fn run(
+    c: &pg::Config,
+    clients: u32,
+    time: Duration,
+    server: Option<u32>,
+) -> Result<Rate, String> {
     let startup = startup(c);
+    let cpu_before = server.map(tree_cpu).transpose()?;
     let stop = AtomicBool::new(false);
     let first_error: Mutex<Option<String>> = Mutex::new(None);
     let started = Instant::now();
@@ -178,13 +230,20 @@ pub(crate) fn run(c: &pg::Config, clients: u32, time: Duration) -> Result<Rate, 
     if let Some(e) = first_error.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner) {
         return Err(e);
     }
+    let server_cpu = match (server, cpu_before) {
+        (Some(pid), Some(before)) => {
+            thread::sleep(Duration::from_secs(1));
+            Some(tree_cpu(pid)?.saturating_sub(before))
+        }
+        _ => None,
+    };
     let mut latency = Histogram::default();
     let mut connections = 0;
     for (n, h) in &parts {
         connections += n;
         latency.merge(h);
     }
-    Ok(Rate { clients, seconds, connections, latency })
+    Ok(Rate { clients, seconds, connections, latency, server_cpu })
 }
 
 #[cfg(test)]
@@ -231,8 +290,35 @@ mod tests {
     fn rate() {
         let mut latency = Histogram::default();
         latency.record(500_000);
-        let r = Rate { clients: 4, seconds: 2.0, connections: 3000, latency };
+        let mut r = Rate { clients: 4, seconds: 2.0, connections: 3000, latency, server_cpu: None };
         assert_eq!(r.per_second(), 1500.0);
         assert!(r.text().contains("1500.0 connections a second"));
+        assert!(!r.text().contains("server cpu"));
+        r.server_cpu = Some(Duration::from_millis(1500));
+        assert_eq!(r.server_us(), Some(500.0));
+        assert!(r.text().contains("server cpu      500.0 us for each connection"));
+        assert!(r.to_json().pretty().contains("\"server_cpu_us_per_connection\": 500"));
+    }
+
+    #[test]
+    fn the_ticks_of_a_stat_line() {
+        let stat = "42 (a (b) c) S 1 42 42 0 -1 4194560 100 0 0 0 7 3 20 10 20 0 1 0 5 0 0";
+        assert_eq!(stat_ticks(stat), Some(40));
+        assert_eq!(stat_ticks("42 (x) S 1"), Some(0));
+        assert_eq!(stat_ticks("no parenthesis"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_cpu_of_this_process_grows() {
+        let me = std::process::id();
+        let before = tree_cpu(me).unwrap();
+        let t = Instant::now();
+        let mut x = 0u64;
+        while t.elapsed() < Duration::from_millis(100) {
+            x = std::hint::black_box(x.wrapping_add(1));
+        }
+        assert!(tree_cpu(me).unwrap() >= before);
+        assert!(tree_cpu(u32::MAX).is_err());
     }
 }

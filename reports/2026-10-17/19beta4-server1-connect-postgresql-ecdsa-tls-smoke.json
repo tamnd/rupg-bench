@@ -1,0 +1,30 @@
+{
+  "unix_time": 1792272288,
+  "kernel": "6.8.0-101-generic",
+  "suite": "connect-postgresql-ecdsa-tls",
+  "machine": "server1",
+  "date": "2026-10-17",
+  "commit": "19beta4",
+  "smoke": true,
+  "server": "127.0.0.1 port 54329 user postgres",
+  "transport": "tls",
+  "client_auth": "password",
+  "server_process": "pid 1014924 and the processes below it",
+  "connect": {
+    "clients": 4,
+    "seconds": 10.008104329,
+    "connections": 2796,
+    "connections_per_second": 279.4,
+    "latency": {
+      "count": 2796,
+      "mean_us": 14310,
+      "p50_us": 9764.9,
+      "p95_us": 43253.8,
+      "p99_us": 49020.9,
+      "p999_us": 58982.4,
+      "max_us": 59060.8
+    },
+    "server_cpu_seconds": 31.94,
+    "server_cpu_us_per_connection": 11423.5
+  }
+}

@@ -82,7 +82,7 @@ fn parent_of(stat: &str) -> Option<u32> {
 }
 
 /// The process and every process below it.
-fn tree(root: u32) -> Vec<u32> {
+pub(crate) fn tree(root: u32) -> Vec<u32> {
     let mut children: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
     if let Ok(entries) = fs::read_dir("/proc") {
         for e in entries.flatten() {

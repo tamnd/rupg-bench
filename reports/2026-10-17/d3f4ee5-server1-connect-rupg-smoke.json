@@ -1,0 +1,30 @@
+{
+  "unix_time": 1792272232,
+  "kernel": "6.8.0-101-generic",
+  "suite": "connect-rupg",
+  "machine": "server1",
+  "date": "2026-10-17",
+  "commit": "d3f4ee5",
+  "smoke": true,
+  "server": "/tmp port 55442 user postgres",
+  "transport": "unix",
+  "client_auth": "none",
+  "server_process": "pid 1014889 and the processes below it",
+  "connect": {
+    "clients": 4,
+    "seconds": 10.001240627,
+    "connections": 103633,
+    "connections_per_second": 10362,
+    "latency": {
+      "count": 103633,
+      "mean_us": 385.4,
+      "p50_us": 158.7,
+      "p95_us": 938,
+      "p99_us": 3735.6,
+      "p999_us": 27656.2,
+      "max_us": 82995.6
+    },
+    "server_cpu_seconds": 14.01,
+    "server_cpu_us_per_connection": 135.2
+  }
+}
