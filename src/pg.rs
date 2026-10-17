@@ -83,9 +83,13 @@ impl Config {
         }
     }
 
-    /// The end of the name of a suite: empty without TLS, so the names of the old reports stay, and `-tls` with it.
+    /// The end of the name of a suite: empty for a Unix socket, so the names of the old reports stay, `-tcp` for TCP and `-tls` for TLS.
     pub(crate) fn suite_suffix(&self) -> &'static str {
-        if self.tls { "-tls" } else { "" }
+        match self.transport() {
+            "unix" => "",
+            "tcp" => "-tcp",
+            _ => "-tls",
+        }
     }
 }
 
@@ -737,7 +741,8 @@ mod tests {
             ("/var/run/postgresql", 5432, "postgres")
         );
         assert!(!d.tls);
-        assert_eq!((c.transport(), d.transport(), c.suite_suffix()), ("tcp", "unix", ""));
+        assert_eq!((c.transport(), d.transport(), c.suite_suffix()), ("tcp", "unix", "-tcp"));
+        assert_eq!(d.suite_suffix(), "");
         let t = Config::parse("host=127.0.0.1 sslmode=require").unwrap();
         assert_eq!((t.tls, t.transport(), t.suite_suffix()), (true, "tls", "-tls"));
         assert!(Config::parse("sslmode=require").is_err());
