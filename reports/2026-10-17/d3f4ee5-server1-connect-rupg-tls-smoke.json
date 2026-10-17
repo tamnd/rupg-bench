@@ -1,0 +1,30 @@
+{
+  "unix_time": 1792272255,
+  "kernel": "6.8.0-101-generic",
+  "suite": "connect-rupg-tls",
+  "machine": "server1",
+  "date": "2026-10-17",
+  "commit": "d3f4ee5",
+  "smoke": true,
+  "server": "127.0.0.1 port 55442 user postgres",
+  "transport": "tls",
+  "client_auth": "password",
+  "server_process": "pid 1014889 and the processes below it",
+  "connect": {
+    "clients": 4,
+    "seconds": 10.004700364,
+    "connections": 11111,
+    "connections_per_second": 1110.6,
+    "latency": {
+      "count": 11111,
+      "mean_us": 3599.9,
+      "p50_us": 2392.1,
+      "p95_us": 9306.1,
+      "p99_us": 24903.7,
+      "p999_us": 38535.2,
+      "max_us": 92790.2
+    },
+    "server_cpu_seconds": 22.1,
+    "server_cpu_us_per_connection": 1989
+  }
+}

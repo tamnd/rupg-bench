@@ -72,12 +72,13 @@ commands:
                               DISCARD ALL on each connection, and prepare prepares a statement and drops it. Each end
                               waits --settle seconds (5) first. --check fails when a session costs more than 64 KiB.
                               --engine (rupg) names the server in the suite, as in idle-postgresql-plain.
-  connect [--engine NAME] [--conn WORDS] [--clients N] [--time SECONDS] [--commit C] [--smoke] [--json] [--report DIR [--machine M]]
+  connect [--engine NAME] [--conn WORDS] [--clients N] [--time SECONDS] [--pid PID] [--commit C] [--smoke] [--json] [--report DIR [--machine M]]
                               the connection rate of spec/06 section 6.18: --clients (4) threads each open a connection,
                               wait for ReadyForQuery, send Terminate and close, again and again for --time seconds (10).
                               The result has the connections a second and the latency of the startup. With sslmode=require
                               or a password, each connection does TLS and SCRAM. --engine (rupg) names the server in the
-                              suite, as in connect-rupg. TCP adds -tcp and TLS adds -tls.
+                              suite, as in connect-rupg. TCP adds -tcp and TLS adds -tls. --pid adds the server CPU
+                              for each connection, from the CPU time of the process and the processes below it.
   instructions --queries PATH --set NAME (--duckdb DB [--duckdb-bin B] [--threads N] | --engine NAME (--unit UNIT | --attach PATH))
           [--bin DIR] [--conn WORDS] [--password-file F] [--repeat N] [--ratchet FILE] [--save FILE] [--smoke] [--json] [--report DIR [--machine M]]
                               count the instructions retired for each query with perf stat (spec/21 section 21.14).
@@ -701,6 +702,10 @@ fn connect_command(mut a: args::Args) -> Result<(), String> {
     let clients: u32 = number(&mut a, "clients", 4)?;
     let time: u64 = number(&mut a, "time", 10)?;
     let engine = a.value("engine").unwrap_or_else(|| "rupg".to_owned());
+    let pid = a
+        .value("pid")
+        .map(|p| p.parse::<u32>().map_err(|_| format!("usage: the pid {p:?} is not a number")))
+        .transpose()?;
     let commit = a.value("commit");
     let smoke = a.flag("smoke");
     let json = a.flag("json");
@@ -719,7 +724,11 @@ fn connect_command(mut a: args::Args) -> Result<(), String> {
     out.add("transport", transport, &format!("transport       {transport}\n"));
     let auth = if conn.password.is_some() { "password" } else { "none" };
     out.add("client_auth", auth, &format!("client auth     {auth}\n"));
-    let result = connect::run(&conn, clients, Duration::from_secs(time));
+    if let Some(pid) = pid {
+        let text = format!("pid {pid} and the processes below it");
+        out.add("server_process", text.as_str(), &format!("server process  {text}\n"));
+    }
+    let result = connect::run(&conn, clients, Duration::from_secs(time), pid);
     match &result {
         Ok(r) => out.add("connect", r.to_json(), &r.text()),
         Err(e) => out.add("error", e.as_str(), ""),
