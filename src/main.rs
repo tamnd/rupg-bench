@@ -77,7 +77,7 @@ commands:
                               wait for ReadyForQuery, send Terminate and close, again and again for --time seconds (10).
                               The result has the connections a second and the latency of the startup. With sslmode=require
                               or a password, each connection does TLS and SCRAM. --engine (rupg) names the server in the
-                              suite, as in connect-rupg, and TLS adds -tls.
+                              suite, as in connect-rupg. TCP adds -tcp and TLS adds -tls.
   instructions --queries PATH --set NAME (--duckdb DB [--duckdb-bin B] [--threads N] | --engine NAME (--unit UNIT | --attach PATH))
           [--bin DIR] [--conn WORDS] [--password-file F] [--repeat N] [--ratchet FILE] [--save FILE] [--smoke] [--json] [--report DIR [--machine M]]
                               count the instructions retired for each query with perf stat (spec/21 section 21.14).
