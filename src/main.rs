@@ -26,6 +26,7 @@ mod pg;
 mod pgbench;
 mod pins;
 mod report;
+mod scram;
 mod suite;
 mod toml;
 mod tpcc;
@@ -59,7 +60,7 @@ commands:
           [--smoke] [--json] [--report DIR [--machine M]]
                               run pgbench -i and the TPC-B like script against the server, measure the server cgroup
                               with the idle base, and run the consistency check of spec/21 section 21.4.6.
-                              --conn takes libpq words: host, port, user, dbname, password (user=bench dbname=bench by default).
+                              --conn takes libpq words: host, port, user, dbname, password, sslmode (user=bench dbname=bench by default).
                               --report writes the report files under DIR (see report).
                               --smoke marks the result as a smoke run, which is not a baseline.
   idle (--unit UNIT | --attach PATH | --pid PID) [--engine NAME] [--conn WORDS] [--sessions N] [--variant plain|discard|prepare]
@@ -74,8 +75,9 @@ commands:
   connect [--engine NAME] [--conn WORDS] [--clients N] [--time SECONDS] [--commit C] [--smoke] [--json] [--report DIR [--machine M]]
                               the connection rate of spec/06 section 6.18: --clients (4) threads each open a connection,
                               wait for ReadyForQuery, send Terminate and close, again and again for --time seconds (10).
-                              The result has the connections a second and the latency of the startup. The server must
-                              allow the user with trust. --engine (rupg) names the server in the suite, as in connect-rupg.
+                              The result has the connections a second and the latency of the startup. With sslmode=require
+                              or a password, each connection does TLS and SCRAM. --engine (rupg) names the server in the
+                              suite, as in connect-rupg, and TLS adds -tls.
   instructions --queries PATH --set NAME (--duckdb DB [--duckdb-bin B] [--threads N] | --engine NAME (--unit UNIT | --attach PATH))
           [--bin DIR] [--conn WORDS] [--password-file F] [--repeat N] [--ratchet FILE] [--save FILE] [--smoke] [--json] [--report DIR [--machine M]]
                               count the instructions retired for each query with perf stat (spec/21 section 21.14).
@@ -637,11 +639,13 @@ fn idle_command(mut a: args::Args) -> Result<(), String> {
         return Err("usage: --sessions must be at least 1".to_owned());
     }
     let mut out = Out::bare();
-    let suite = format!("idle-{engine}-{}", variant.name());
+    let suite = format!("idle-{engine}-{}{}", variant.name(), conn.suite_suffix());
     header(&mut out, &report::Meta::now(&suite, machine, commit, smoke));
     let described = server.describe();
     out.add("server", described.as_str(), &format!("server          {described}\n"));
     out.add("variant", variant.name(), &format!("variant         {}\n", variant.name()));
+    let transport = conn.transport();
+    out.add("transport", transport, &format!("transport       {transport}\n"));
     let result = idle::run(&server, &conn, sessions, variant, Duration::from_secs(settle));
     match &result {
         Ok(m) => out.add("idle", m.to_json(), &m.text()),
@@ -707,9 +711,14 @@ fn connect_command(mut a: args::Args) -> Result<(), String> {
         return Err("usage: --clients and --time must be at least 1".to_owned());
     }
     let mut out = Out::bare();
-    header(&mut out, &report::Meta::now(&format!("connect-{engine}"), machine, commit, smoke));
+    let suite = format!("connect-{engine}{}", conn.suite_suffix());
+    header(&mut out, &report::Meta::now(&suite, machine, commit, smoke));
     let target = format!("{} port {} user {}", conn.host, conn.port, conn.user);
     out.add("server", target.as_str(), &format!("server          {target}\n"));
+    let transport = conn.transport();
+    out.add("transport", transport, &format!("transport       {transport}\n"));
+    let auth = if conn.password.is_some() { "password" } else { "none" };
+    out.add("client_auth", auth, &format!("client auth     {auth}\n"));
     let result = connect::run(&conn, clients, Duration::from_secs(time));
     match &result {
         Ok(r) => out.add("connect", r.to_json(), &r.text()),

@@ -1,13 +1,21 @@
 //! A small client for the PostgreSQL wire protocol, version 3.0.
 //!
-//! The drivers read their checks through this client, and the YCSB driver sends its statements through it. spec/20 section 20.9 names `libpq`. The harness has no dependencies and no unsafe code, so this module speaks the protocol itself. It has the start of a connection, the simple query protocol, `COPY FROM STDIN`, and prepared statements of the extended protocol with the pipeline of `libpq`.
+//! The drivers read their checks through this client, and the YCSB driver sends its statements through it. spec/20 section 20.9 names `libpq`. The harness has no unsafe code and links no client library, so this module speaks the protocol itself. TLS comes from rustls and SCRAM from ring, the crates that rupg uses. It has the start of a connection, the simple query protocol, `COPY FROM STDIN`, and prepared statements of the extended protocol with the pipeline of `libpq`.
 //!
-//! It supports the `trust` and `password` methods of `pg_hba.conf`. The machine scripts set `trust` for the benchmark user on the local host. Values are sent and received as text.
+//! It supports the `trust`, `password` and `scram-sha-256` methods of `pg_hba.conf`. SCRAM has no channel binding, as `libpq` with `channel_binding=disable`. With `sslmode=require` the connection over TCP uses TLS, as `libpq` with that mode: the client does not check the certificate of the server. The machine scripts set `trust` for the benchmark user on the local host. Values are sent and received as text.
 
 use std::fmt;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::net::TcpStream;
 use std::os::unix::net::UnixStream;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::crypto::CryptoProvider;
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{ClientConfig, ClientConnection, DigitallySignedStruct, SignatureScheme, StreamOwned};
+
+use crate::scram;
 
 /// Where the server is.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -18,10 +26,12 @@ pub(crate) struct Config {
     pub(crate) user: String,
     pub(crate) dbname: String,
     pub(crate) password: Option<String>,
+    /// `sslmode=require`: TLS on a TCP connection.
+    pub(crate) tls: bool,
 }
 
 impl Config {
-    /// Parses `key=value` words, as `libpq` does: `host`, `port`, `user`, `dbname` and `password`.
+    /// Parses `key=value` words, as `libpq` does: `host`, `port`, `user`, `dbname`, `password` and `sslmode` (`disable`, the default, or `require`).
     pub(crate) fn parse(s: &str) -> Result<Config, String> {
         let mut c = Config {
             host: "/var/run/postgresql".to_owned(),
@@ -29,6 +39,7 @@ impl Config {
             user: "postgres".to_owned(),
             dbname: String::new(),
             password: None,
+            tls: false,
         };
         for word in s.split_whitespace() {
             let (k, v) = word
@@ -42,13 +53,39 @@ impl Config {
                 "user" => c.user = v.to_owned(),
                 "dbname" => c.dbname = v.to_owned(),
                 "password" => c.password = Some(v.to_owned()),
+                "sslmode" => {
+                    c.tls = match v {
+                        "disable" => false,
+                        "require" => true,
+                        _ => return Err(format!("the sslmode {v:?} is not disable or require")),
+                    }
+                }
                 _ => return Err(format!("the connection key {k:?} is not supported")),
             }
         }
         if c.dbname.is_empty() {
             c.dbname = c.user.clone();
         }
+        if c.tls && c.host.starts_with('/') {
+            return Err("sslmode=require needs a TCP host, not a Unix socket".to_owned());
+        }
         Ok(c)
+    }
+
+    /// `unix`, `tcp` or `tls`.
+    pub(crate) fn transport(&self) -> &'static str {
+        if self.host.starts_with('/') {
+            "unix"
+        } else if self.tls {
+            "tls"
+        } else {
+            "tcp"
+        }
+    }
+
+    /// The end of the name of a suite: empty without TLS, so the names of the old reports stay, and `-tls` with it.
+    pub(crate) fn suite_suffix(&self) -> &'static str {
+        if self.tls { "-tls" } else { "" }
     }
 }
 
@@ -104,11 +141,15 @@ pub(crate) struct Done {
     pub(crate) tag: String,
 }
 
-/// The two kinds of socket.
+/// A TLS stream. The reader and the writer of a connection share it.
+type Tls = Arc<Mutex<StreamOwned<ClientConnection, TcpStream>>>;
+
+/// The three kinds of socket.
 #[derive(Debug)]
 enum Socket {
     Tcp(TcpStream),
     Unix(UnixStream),
+    Tls(Tls),
 }
 
 impl Read for Socket {
@@ -116,6 +157,7 @@ impl Read for Socket {
         match self {
             Socket::Tcp(s) => s.read(buf),
             Socket::Unix(s) => s.read(buf),
+            Socket::Tls(s) => s.lock().unwrap_or_else(PoisonError::into_inner).read(buf),
         }
     }
 }
@@ -125,6 +167,7 @@ impl Write for Socket {
         match self {
             Socket::Tcp(s) => s.write(buf),
             Socket::Unix(s) => s.write(buf),
+            Socket::Tls(s) => s.lock().unwrap_or_else(PoisonError::into_inner).write(buf),
         }
     }
 
@@ -132,8 +175,96 @@ impl Write for Socket {
         match self {
             Socket::Tcp(s) => s.flush(),
             Socket::Unix(s) => s.flush(),
+            Socket::Tls(s) => s.lock().unwrap_or_else(PoisonError::into_inner).flush(),
         }
     }
+}
+
+/// A verifier that takes any certificate, as `sslmode=require` does. It checks the signatures of the handshake, so the server must have the private key of the certificate that it sends.
+#[derive(Debug)]
+struct AnyCertificate(CryptoProvider);
+
+impl ServerCertVerifier for AnyCertificate {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
+    }
+}
+
+/// The TLS configuration of every connection, with the ALPN name `postgresql` that `libpq` sends.
+fn tls_config() -> Result<Arc<ClientConfig>, PgError> {
+    static CONFIG: OnceLock<Result<Arc<ClientConfig>, String>> = OnceLock::new();
+    CONFIG
+        .get_or_init(|| {
+            let provider = Arc::new(rustls::crypto::ring::default_provider());
+            let verifier = Arc::new(AnyCertificate(rustls::crypto::ring::default_provider()));
+            let mut config = ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .map_err(|e| format!("TLS: {e}"))?
+                .dangerous()
+                .with_custom_certificate_verifier(verifier)
+                .with_no_client_auth();
+            config.alpn_protocols = vec![b"postgresql".to_vec()];
+            Ok(Arc::new(config))
+        })
+        .clone()
+        .map_err(client_error)
+}
+
+/// Sends `SSLRequest` and starts TLS when the server answers `S`. The handshake itself runs at the first read or write.
+fn start_tls(mut s: TcpStream, host: &str) -> Result<Tls, PgError> {
+    s.write_all(&[0, 0, 0, 8, 0x04, 0xd2, 0x16, 0x2f])?;
+    let mut answer = [0u8; 1];
+    s.read_exact(&mut answer)?;
+    if answer[0] != b'S' {
+        return Err(client_error(format!(
+            "the server does not accept TLS: it answers {:?} to SSLRequest",
+            answer[0] as char
+        )));
+    }
+    let name = ServerName::try_from(host.to_owned())
+        .map_err(|e| client_error(format!("the host {host:?} is not a server name: {e}")))?;
+    let conn = ClientConnection::new(tls_config()?, name)
+        .map_err(|e| client_error(format!("TLS: {e}")))?;
+    Ok(Arc::new(Mutex::new(StreamOwned::new(conn, s))))
 }
 
 /// One connection.
@@ -153,7 +284,12 @@ impl Conn {
         } else {
             let s = TcpStream::connect((c.host.as_str(), c.port))?;
             s.set_nodelay(true)?;
-            (Socket::Tcp(s.try_clone()?), Socket::Tcp(s))
+            if c.tls {
+                let t = start_tls(s, &c.host)?;
+                (Socket::Tls(Arc::clone(&t)), Socket::Tls(t))
+            } else {
+                (Socket::Tcp(s.try_clone()?), Socket::Tcp(s))
+            }
         };
         let mut conn = Conn {
             reader: BufReader::with_capacity(1 << 16, r),
@@ -176,6 +312,7 @@ impl Conn {
         conn.writer.write_all(&len.to_be_bytes())?;
         conn.writer.write_all(&body)?;
         conn.writer.flush()?;
+        let mut sasl: Option<scram::Client> = None;
         loop {
             let (tag, msg) = conn.read_message()?;
             match tag {
@@ -192,9 +329,46 @@ impl Conn {
                             conn.send(b'p', &m)?;
                             conn.writer.flush()?;
                         }
+                        10 => {
+                            let offered = msg.get(4..).unwrap_or_default();
+                            if !offered.split(|&b| b == 0).any(|m| m == scram::MECHANISM.as_bytes())
+                            {
+                                return Err(client_error(
+                                    "the server offers no SASL mechanism that this client supports",
+                                ));
+                            }
+                            let pw = c.password.as_deref().ok_or(client_error(
+                                "the server asks for a password and none was given",
+                            ))?;
+                            let client = scram::Client::new(pw).map_err(client_error)?;
+                            let first = client.first();
+                            let mut m = Vec::new();
+                            cstr(&mut m, scram::MECHANISM);
+                            m.extend_from_slice(
+                                &u32::try_from(first.len()).unwrap_or(u32::MAX).to_be_bytes(),
+                            );
+                            m.extend_from_slice(first.as_bytes());
+                            conn.send(b'p', &m)?;
+                            conn.writer.flush()?;
+                            sasl = Some(client);
+                        }
+                        11 => {
+                            let client =
+                                sasl.as_mut().ok_or(client_error("SASLContinue before SASL"))?;
+                            let data = String::from_utf8_lossy(msg.get(4..).unwrap_or_default());
+                            let last = client.last(&data).map_err(client_error)?;
+                            conn.send(b'p', last.as_bytes())?;
+                            conn.writer.flush()?;
+                        }
+                        12 => {
+                            let client =
+                                sasl.as_ref().ok_or(client_error("SASLFinal before SASL"))?;
+                            let data = String::from_utf8_lossy(msg.get(4..).unwrap_or_default());
+                            client.check(&data).map_err(client_error)?;
+                        }
                         _ => {
                             return Err(client_error(format!(
-                                "the server asks for authentication method {kind}. This client supports trust and password. Set trust for the benchmark user in pg_hba.conf"
+                                "the server asks for authentication method {kind}. This client supports trust, password and scram-sha-256. Set trust for the benchmark user in pg_hba.conf"
                             )));
                         }
                     }
@@ -562,7 +736,12 @@ mod tests {
             (d.host.as_str(), d.port, d.dbname.as_str()),
             ("/var/run/postgresql", 5432, "postgres")
         );
+        assert!(!d.tls);
+        assert_eq!((c.transport(), d.transport(), c.suite_suffix()), ("tcp", "unix", ""));
+        let t = Config::parse("host=127.0.0.1 sslmode=require").unwrap();
+        assert_eq!((t.tls, t.transport(), t.suite_suffix()), (true, "tls", "-tls"));
         assert!(Config::parse("sslmode=require").is_err());
+        assert!(Config::parse("host=127.0.0.1 sslmode=prefer").is_err());
         assert!(Config::parse("port=x").is_err());
     }
 
