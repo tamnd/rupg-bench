@@ -212,12 +212,13 @@ pub(crate) fn throughput(c: &Config) -> Result<(Json, String), String> {
     Ok((json, text))
 }
 
-/// The options of the recovery file. The ring holds the log with a quarter more for the block headers and the fill, and no automatic checkpoint starts before the log is full.
+/// The options of the recovery file. The ring holds the log with a quarter more for the block headers and the fill, and no automatic checkpoint starts before the log is full. The limit for all rings together is the same as the limit for one ring, because the file has one ring.
 fn recovery_options(log_bytes: u64) -> Options {
     let ring = (log_bytes + log_bytes / 4).div_ceil(EXTENT) + 1;
     Options {
         log_extents: ring as usize,
         checkpoint_log: Some(ring * EXTENT),
+        max_wal_size: ring * EXTENT,
         ..Options::default()
     }
 }
@@ -364,6 +365,7 @@ mod tests {
         let o = recovery_options(1 << 30);
         assert!(o.log_extents as u64 * EXTENT >= (1 << 30) + (1 << 28));
         assert_eq!(o.checkpoint_log, Some(o.log_extents as u64 * EXTENT));
+        assert_eq!(o.max_wal_size, o.log_extents as u64 * EXTENT);
     }
 
     #[test]
