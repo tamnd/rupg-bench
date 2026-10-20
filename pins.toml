@@ -22,8 +22,8 @@ date = "2026-10-05"
 
 [rupg]
 repo = "https://github.com/tamnd/rupg"
-commit = "238dd515594a39e198c40375cf4236a282390753"
-date = "2026-10-08"
+commit = "2a5296ed69345ec35519eab7fb8be25e3b0a9615"
+date = "2026-10-20"
 note = "The m1 command links the facade at this commit. Cargo.toml names the same commit, and a test checks it. The server runs use it from M2."
 
 [clickhouse]

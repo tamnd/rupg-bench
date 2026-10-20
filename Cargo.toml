@@ -10,7 +10,7 @@ publish = false
 
 # The M1 numbers link the rupg facade at the commit of pins.toml. A test checks that the two commits are the same.
 [dependencies]
-rupg = { git = "https://github.com/tamnd/rupg", rev = "238dd515594a39e198c40375cf4236a282390753" }
+rupg = { git = "https://github.com/tamnd/rupg", rev = "2a5296ed69345ec35519eab7fb8be25e3b0a9615" }
 # TLS and SCRAM-SHA-256 for the client of src/pg.rs, with the same crates and features as rupg.
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
