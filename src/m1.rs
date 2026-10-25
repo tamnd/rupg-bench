@@ -1,4 +1,4 @@
-//! The M1 numbers of spec/23 section 23.4 of tamnd/rupg: the size of an empty file, the commit latency at one writer, the commits per second at one writer per core, and the recovery time after 1 GiB of log.
+//! The M1 numbers of spec/23 section 23.4 of tamnd/rupg: the size of an empty file, the commit latency at one writer next to the `fdatasync` time of the device, the commits per second at one writer per core, the recovery time after 1 GiB of log, and a load with the smallest log ring (spec/19 section 19.10.1).
 //!
 //! The runs use the `rupg` facade at the commit in `Cargo.toml`, with the default options of the facade unless a step says otherwise. Each step makes a new file in the work directory and removes it at the end. Each commit is durable when it returns, so each commit waits for an `fdatasync` of the log, alone or in a group with the commits of other writers.
 
@@ -42,7 +42,13 @@ pub(crate) struct Config {
 }
 
 /// The steps of the `m1` command.
-pub(crate) const STEPS: [&str; 4] = ["empty", "latency", "throughput", "recovery"];
+pub(crate) const STEPS: [&str; 5] = ["empty", "latency", "throughput", "recovery", "ring"];
+
+/// The `fdatasync` samples of the latency step, after 10 that do not count.
+const SYNCS: usize = 1_000;
+
+/// The rows of one transaction of the ring step.
+const LOAD_ROWS: u32 = 100;
 
 /// The table of each step: a key and a text value.
 fn columns() -> Vec<ColumnDef> {
@@ -114,6 +120,28 @@ fn percentiles(sorted: &[Duration]) -> Json {
         .with("mean_us", mean)
 }
 
+/// The `fdatasync` time of the device under `dir`, as `machines/fdatasync.sh` measures it with fio: writes of 4 KiB to the end of a file, each with one `fdatasync`, at a queue depth of 1.
+fn fdatasync(dir: &Path) -> Result<Vec<Duration>, String> {
+    let path = dir.join("fdatasync.bin");
+    let err = |e: std::io::Error| format!("{}: {e}", path.display());
+    let mut f =
+        fs::OpenOptions::new().create(true).truncate(true).write(true).open(&path).map_err(err)?;
+    let block = [0x5a_u8; 4096];
+    let mut samples = Vec::with_capacity(SYNCS);
+    for i in 0..10 + SYNCS {
+        f.write_all(&block).map_err(err)?;
+        let start = Instant::now();
+        f.sync_data().map_err(err)?;
+        if i >= 10 {
+            samples.push(start.elapsed());
+        }
+    }
+    drop(f);
+    remove(&path)?;
+    samples.sort_unstable();
+    Ok(samples)
+}
+
 /// The commit latency at one writer. Each transaction inserts one row and commits. The time is from the start of the transaction to the return of the commit.
 pub(crate) fn latency(c: &Config) -> Result<(Json, String), String> {
     let path = c.dir.join("latency.rupg");
@@ -134,24 +162,30 @@ pub(crate) fn latency(c: &Config) -> Result<(Json, String), String> {
     remove(&path)?;
     samples.sort_unstable();
     let p = percentiles(&samples);
-    let num = |k: &str| match p.get(k) {
+    let sync = percentiles(&fdatasync(&c.dir)?);
+    let num = |j: &Json, k: &str| match j.get(k) {
         Some(Json::Num(x)) => *x,
         _ => 0.0,
     };
     let text = format!(
-        "commit latency  {} commits after {} warmup: p50 {:.1} us, p90 {:.1} us, p99 {:.1} us, max {:.1} us\n",
+        "commit latency  {} commits after {} warmup: p50 {:.1} us, p90 {:.1} us, p99 {:.1} us, max {:.1} us\n\
+         fdatasync       {SYNCS} writes of 4 KiB: p50 {:.1} us, p99 {:.1} us\n",
         c.commits,
         c.warmup,
-        num("p50_us"),
-        num("p90_us"),
-        num("p99_us"),
-        num("max_us")
+        num(&p, "p50_us"),
+        num(&p, "p90_us"),
+        num(&p, "p99_us"),
+        num(&p, "max_us"),
+        num(&sync, "p50_us"),
+        num(&sync, "p99_us")
     );
     let json = Json::obj()
         .with("warmup", c.warmup)
         .with("commits", c.commits)
         .with("value_bytes", SMALL_VALUE)
-        .with("latency", p);
+        .with("latency", p)
+        .with("fdatasync_syncs", SYNCS)
+        .with("fdatasync", sync);
     Ok((json, text))
 }
 
@@ -208,6 +242,81 @@ pub(crate) fn throughput(c: &Config) -> Result<(Json, String), String> {
         c.writers,
         min.unwrap_or(0),
         max.unwrap_or(0)
+    );
+    Ok((json, text))
+}
+
+/// One load of the ring step: `writers` threads insert rows of `value` bytes, `LOAD_ROWS` in each commit, until the values are `bytes`. It gives the seconds.
+fn load(path: &Path, options: Options, c: &Config, bytes: u64) -> Result<f64, String> {
+    remove(path)?;
+    let db = Database::open(path, options).map_err(fail("open"))?;
+    let tables = (0..c.writers)
+        .map(|w| db.create_table(&format!("t{w}"), columns()).map_err(fail("create table")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let commits = bytes.div_ceil(c.value as u64 * u64::from(LOAD_ROWS) * c.writers as u64);
+    let start = Arc::new(Barrier::new(c.writers + 1));
+    let handles: Vec<_> = tables
+        .into_iter()
+        .map(|t| {
+            let (db, start, value) = (db.clone(), start.clone(), c.value);
+            std::thread::spawn(move || -> Result<(), String> {
+                start.wait();
+                for round in 0..commits {
+                    let v = round_value(round, value);
+                    let mut tx = db.transaction().map_err(fail("begin"))?;
+                    for r in 0..LOAD_ROWS {
+                        let k = (round * u64::from(LOAD_ROWS) + u64::from(r)) as i64;
+                        tx.insert(&t, &[Datum::Int8(k), Datum::Text(v.clone())])
+                            .map_err(fail("insert"))?;
+                    }
+                    tx.commit().map_err(fail("commit"))?;
+                }
+                Ok(())
+            })
+        })
+        .collect();
+    start.wait();
+    let began = Instant::now();
+    for h in handles {
+        h.join().map_err(|_| "a writer panicked".to_owned())??;
+    }
+    let wall = began.elapsed().as_secs_f64();
+    db.close().map_err(fail("close"))?;
+    remove(path)?;
+    Ok(wall)
+}
+
+/// The ring step: the same load with the default log ring and with a ring of one extent for the file, which is the smallest ring of the file format. The small ring is enough when its load is at most 10 percent slower. spec/19 section 19.10.1 asks about a ring of 8 MiB for each worker, but an extent of the ring is 16 MiB, so a smaller ring needs a change of the format (Q30 of spec/24).
+pub(crate) fn ring(c: &Config) -> Result<(Json, String), String> {
+    let path = c.dir.join("ring.rupg");
+    let bytes = c.log_bytes;
+    let default = Options::default();
+    let small = Options { log_extents: 1, ..Options::default() };
+    let wide = load(&path, default.clone(), c, bytes)?;
+    let narrow = load(&path, small.clone(), c, bytes)?;
+    let gib = bytes as f64 / f64::from(1 << 30);
+    let slower = narrow / wide - 1.0;
+    let enough = slower <= 0.10;
+    let json = Json::obj()
+        .with("writers", c.writers)
+        .with("value_bytes", c.value)
+        .with("rows_per_commit", LOAD_ROWS)
+        .with("load_bytes", bytes)
+        .with("default_ring_bytes", default.log_extents as u64 * EXTENT)
+        .with("default_seconds", wide)
+        .with("small_ring_bytes", small.log_extents as u64 * EXTENT)
+        .with("small_seconds", narrow)
+        .with("small_slower", slower)
+        .with("small_enough", enough);
+    let text = format!(
+        "ring            load of {gib:.3} GiB with {} writers: {:.1} s with a ring of {} MiB, {:.1} s with a ring of {} MiB ({:+.1} percent), {}\n",
+        c.writers,
+        wide,
+        (default.log_extents as u64 * EXTENT) >> 20,
+        narrow,
+        (small.log_extents as u64 * EXTENT) >> 20,
+        slower * 100.0,
+        if enough { "the small ring is enough" } else { "the small ring is not enough" }
     );
     Ok((json, text))
 }

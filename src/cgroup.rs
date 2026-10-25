@@ -175,6 +175,24 @@ impl Cgroup {
         Ok(())
     }
 
+    /// Moves this process, with all its threads, into the cgroup. Its children start in the cgroup too. It gives the cgroup the process was in, for `leave`.
+    pub(crate) fn enter(&self) -> Result<PathBuf, String> {
+        let own = read(Path::new("/proc/self/cgroup"))?;
+        let rel = own
+            .lines()
+            .find_map(|l| l.strip_prefix("0::"))
+            .ok_or("/proc/self/cgroup has no cgroup v2 line")?;
+        let from = Path::new(CGROUP_ROOT).join(rel.trim().trim_start_matches('/'));
+        write(&self.path.join("cgroup.procs"), &std::process::id().to_string())?;
+        Ok(from)
+    }
+
+    /// Moves this process back into the cgroup `from` that `enter` gave, and removes the cgroup if the harness created it.
+    pub(crate) fn leave(self, from: &Path) -> Result<(), String> {
+        write(&from.join("cgroup.procs"), &std::process::id().to_string())?;
+        self.remove()
+    }
+
     /// Removes the cgroup if the harness created it. The processes must have exited.
     pub(crate) fn remove(self) -> Result<(), String> {
         if !self.owned {
