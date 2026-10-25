@@ -126,8 +126,8 @@ commands:
                               (DIR/../lib/benchmark-common.sh). With --unit or --attach the server cgroup is measured,
                               else each query runs in a new cgroup. The answers come from an unmeasured pass, through
                               --conn (user=bench dbname=test) for a server or with duckdb on DIR/hits.db.
-  m1 --dir DIR [--steps empty,latency,throughput,recovery] [--warmup N] [--commits N] [--writers N] [--seconds S]
-          [--log-mib N] [--rows N] [--value BYTES] [--smoke] [--json] [--report DIR [--machine M]]
+  m1 --dir DIR [--steps empty,latency,throughput,recovery,ring] [--warmup N] [--commits N] [--writers N] [--seconds S]
+          [--log-mib N] [--rows N] [--value BYTES] [--cgroup NAME] [--smoke] [--json] [--report DIR [--machine M]]
                               the M1 numbers of spec/23 section 23.4 with the rupg facade at the commit of pins.toml.
                               empty makes a database with the default options and gives the size of the file. latency
                               times --commits (10,000) commits of one row at one writer after --warmup (1,000). throughput
@@ -135,6 +135,11 @@ commands:
                               starts rupg-bench m1-fill, which updates --rows (256) rows of --value bytes (2,000) in each
                               commit until --log-mib (1,024) MiB of values are in the log and exits with no close. Then it
                               drops the file from the page cache with dd where it can and times the open that replays the log.
+                              latency also times 1,000 fdatasync calls after writes of 4 KiB in DIR. ring runs the same
+                              load of --log-mib MiB with --writers, 100 rows of --value bytes in each commit, with the
+                              default log ring and with a ring of one extent (16 MiB). With --cgroup, m1 moves itself into
+                              the cgroup /sys/fs/cgroup/rupg-bench/NAME (Linux, as root) and gives the device write bytes
+                              of io.stat for each step.
   --version                   print the version";
 
 fn main() -> ExitCode {
@@ -486,9 +491,20 @@ fn m1_command(mut a: args::Args) -> Result<(), String> {
     let json = a.flag("json");
     let report_dir = a.value("report");
     let machine = a.value("machine");
+    let cgroup_name = a.value("cgroup");
     a.finish()?;
     std::fs::create_dir_all(&c.dir).map_err(|e| format!("{}: {e}", c.dir.display()))?;
     let pins = pins::Pins::load(concat!(env!("CARGO_MANIFEST_DIR"), "/pins.toml"))?;
+    // The child of the recovery step starts in the cgroup too, so its log writes count.
+    let cg = match &cgroup_name {
+        Some(name) => {
+            let cg = Cgroup::create(name, None)?;
+            let from = cg.enter()?;
+            Some((cg, from))
+        }
+        None => None,
+    };
+    let written = || cg.as_ref().and_then(|(cg, _)| cg.counters().ok()).and_then(|n| n.wbytes);
     let rupg_commit = pins.get("rupg", "commit").unwrap_or_default().to_owned();
     let meta = report::Meta::now("m1", machine, Some(rupg_commit.chars().take(8).collect()), smoke);
     let mut out = Out { json: meta.to_json(), text: String::new() };
@@ -522,20 +538,32 @@ date            {}
     out.add("dir", c.dir.display().to_string(), &format!("directory       {}\n", c.dir.display()));
     let mut result = Ok(());
     for step in &steps {
+        let before = written();
         let r = match *step {
             "empty" => m1::empty(&c),
             "latency" => m1::latency(&c),
             "throughput" => m1::throughput(&c),
+            "ring" => m1::ring(&c),
             _ => m1::recovery(&c),
         };
         match r {
-            Ok((j, text)) => out.add(step, j, &text),
+            Ok((j, mut text)) => {
+                // The device write bytes of the step, from io.stat. A write that the kernel flushes after the step counts in the next step.
+                let bytes = before.zip(written()).map(|(b, a)| a.saturating_sub(b));
+                if let Some(b) = bytes {
+                    text.push_str(&format!("                io.stat write {}\n", cgroup::mib(b)));
+                }
+                out.add(step, j.with("device_write_bytes", bytes), &text);
+            }
             Err(e) => {
                 out.add("error", format!("{step}: {e}"), "");
                 result = Err(format!("{step}: {e}"));
                 break;
             }
         }
+    }
+    if let Some((cg, from)) = cg {
+        cg.leave(&from)?;
     }
     if let Some(dir) = &report_dir {
         let (md, json) = report::write(Path::new(dir), &out.json)?;
