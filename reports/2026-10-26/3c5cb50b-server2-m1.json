@@ -1,0 +1,126 @@
+{
+  "suite": "m1",
+  "machine": "server2",
+  "date": "2026-10-26",
+  "commit": "3c5cb50b",
+  "smoke": false,
+  "rupg_commit": "3c5cb50b9fd4e55106fd698b7b55fb88e1f4108e",
+  "rupg_version": "0.2.3",
+  "cores": 6,
+  "os": "linux",
+  "kernel": "6.8.0-147-generic",
+  "dir": "/root/m1-run",
+  "empty": {
+    "file_bytes": 83935232,
+    "allocated_bytes": 307200,
+    "device_write_bytes": 311296
+  },
+  "latency": {
+    "warmup": 1000,
+    "commits": 10000,
+    "value_bytes": 100,
+    "latency": {
+      "p50_us": 2433.973,
+      "p90_us": 4306.8589999999995,
+      "p99_us": 9013.312,
+      "p999_us": 17044.5,
+      "max_us": 60572.929,
+      "mean_us": 2839.603484499999
+    },
+    "fdatasync_syncs": 1000,
+    "fdatasync": {
+      "p50_us": 2096.202,
+      "p90_us": 3494.713,
+      "p99_us": 5924.006,
+      "p999_us": 10009.981,
+      "max_us": 11078.164999999999,
+      "mean_us": 2363.518603999997
+    },
+    "device_write_bytes": 51961856
+  },
+  "throughput": {
+    "writers": 6,
+    "seconds": 30.00460565,
+    "commits": 32002,
+    "commits_per_second": 1066.5695917919854,
+    "writer_min": 5299,
+    "writer_max": 5368,
+    "device_write_bytes": 47828992
+  },
+  "recovery": {
+    "rows": 256,
+    "value_bytes": 2000,
+    "rounds": 2098,
+    "row_bytes_written": 1074176000,
+    "log_blocks": 2098,
+    "log_bytes": 1078036320,
+    "file_bytes": 1375780864,
+    "fill_seconds": 18.887679972,
+    "page_cache_dropped": true,
+    "open_seconds": 4.563478876,
+    "replay_gib_per_second": 0.22000749611257672,
+    "device_write_bytes": 1085358080
+  },
+  "ring": {
+    "writers": 6,
+    "value_bytes": 2000,
+    "rows_per_commit": 100,
+    "load_bytes": 1073741824,
+    "commit_seconds": 10,
+    "default": {
+      "ring_bytes": 67108864,
+      "load_seconds": 19.659264051,
+      "load_slower": 0,
+      "commits_per_second": 896.1209510159434,
+      "commits_fewer": 0,
+      "enough": true
+    },
+    "worker": {
+      "ring_bytes": 50331648,
+      "load_seconds": 21.773087733,
+      "load_slower": 0.10752303222116177,
+      "commits_per_second": 827.41465140132,
+      "commits_fewer": 0.07667078817511208,
+      "enough": false
+    },
+    "smallest": {
+      "ring_bytes": 16777216,
+      "load_seconds": 19.893421288,
+      "load_slower": 0.011910783455196805,
+      "commits_per_second": 1021.1296728206945,
+      "commits_fewer": -0.1394998316499878,
+      "enough": true
+    },
+    "device_write_bytes": 6832193536
+  },
+  "postgresql": {
+    "server_version": "18.6",
+    "settings": "fsync=on full_page_writes=on shared_buffers=131072 synchronous_commit=on wal_sync_method=fdatasync",
+    "data_directory": "/var/lib/rupgpg/data",
+    "value_bytes": 100,
+    "seconds": 30,
+    "curve": [
+      {
+        "clients": 1,
+        "commits_per_second": 709.233855,
+        "latency_ms": 1.41
+      },
+      {
+        "clients": 6,
+        "commits_per_second": 2302.561842,
+        "latency_ms": 2.606
+      },
+      {
+        "clients": 8,
+        "commits_per_second": 2938.289609,
+        "latency_ms": 2.723
+      },
+      {
+        "clients": 32,
+        "commits_per_second": 7753.75747,
+        "latency_ms": 4.127
+      }
+    ],
+    "device_write_bytes": null
+  }
+}

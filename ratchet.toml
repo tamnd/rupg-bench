@@ -7,5 +7,21 @@
 # `rupg-bench instructions --ratchet ratchet.toml` fails when one query rises by
 # more than 3 percent or the total by more than 1 percent.
 #
-# The file has no table yet. Counts from a shared machine such as server3 are
-# smoke runs and do not belong here.
+# The table [instructions.m1] is from server2, a shared machine. The owner
+# accepted server2 for M1 (tamnd/rupg-bench#2), because the M1 set counts only
+# user instructions on the in-memory file system, and its noise on server2 is
+# at most 0.7 percent for one operation. The tables of the SQL sets come from
+# the dedicated runner. Counts of SQL sets from a shared machine such as server3
+# are smoke runs and do not belong here.
+
+[instructions.m1]
+machine = "server2"
+date = "2026-10-26"
+total = 2272682092
+insert = 697791822
+commit = 91978702
+get = 52987986
+scan = 479198297
+update = 376181465
+delete = 555709604
+reopen = 18834216

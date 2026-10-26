@@ -1,0 +1,8 @@
+suite           m1
+machine         vmi3112167
+date            2026-10-26
+rupg            0.2.3 at 3c5cb50b9fd4e55106fd698b7b55fb88e1f4108e
+directory       /root/m1-run
+ring default    64 MiB: load of 1.000 GiB in 22.8 s (+0.0 percent), 952 commits/s (-0.0 percent)
+ring worker     48 MiB: load of 1.000 GiB in 26.0 s (+14.2 percent), 864 commits/s (-9.2 percent), not enough
+ring smallest   16 MiB: load of 1.000 GiB in 25.5 s (+12.1 percent), 926 commits/s (-2.7 percent), not enough

@@ -22,9 +22,9 @@ date = "2026-10-05"
 
 [rupg]
 repo = "https://github.com/tamnd/rupg"
-commit = "2a5296ed69345ec35519eab7fb8be25e3b0a9615"
-date = "2026-10-20"
-note = "The m1 command links the facade at this commit. Cargo.toml names the same commit, and a test checks it. The server runs use it from M2."
+commit = "3c5cb50b9fd4e55106fd698b7b55fb88e1f4108e"
+date = "2026-10-26"
+note = "The m1 command links the facade at this commit, which is the release 0.2.3. Cargo.toml names the same commit, and a test checks it. The server runs use it from M2."
 
 [clickhouse]
 version = "26.9.12.8"
@@ -78,4 +78,4 @@ path = "tpch_tools_3.0.1"
 note = "The TPC-H tools are under the TPC EULA. The harness fetches them at run time and does not copy them into this repository. release.h in this copy says 3.0.0."
 
 [rust]
-version = "1.98.0"
+version = "1.99.1"

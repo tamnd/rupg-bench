@@ -85,7 +85,9 @@ commands:
                               PATH is a file with one query on each line or a directory of <name>.sql files.
                               --duckdb counts the duckdb process. --unit and --attach count the server cgroup on all
                               CPUs while psql from --bin reads the query on stdin and sends each statement. Each query runs --repeat times (3) and the
-                              minimum counts, minus the count of SELECT 1. --ratchet compares with [instructions.NAME]
+                              minimum counts, minus the count of SELECT 1. --m1 counts the operations of the M1 set in
+                              place of --queries, each in a new rupg-bench m1-op process, with the user instructions only
+                              and minus the count of the operation base. --ratchet compares with [instructions.NAME]
                               of a ratchet file and fails over the budgets (3 percent a query, 1 percent in total).
                               --save writes that table for this run. --password-file gives psql the password in PGPASSWORD.
   fixed-set --out DIR [--records N] [--warehouses N] [--seed N]
@@ -127,7 +129,8 @@ commands:
                               else each query runs in a new cgroup. The answers come from an unmeasured pass, through
                               --conn (user=bench dbname=test) for a server or with duckdb on DIR/hits.db.
   m1 --dir DIR [--steps empty,latency,throughput,recovery,ring] [--warmup N] [--commits N] [--writers N] [--seconds S]
-          [--log-mib N] [--rows N] [--value BYTES] [--cgroup NAME] [--smoke] [--json] [--report DIR [--machine M]]
+          [--log-mib N] [--rows N] [--value BYTES] [--cgroup NAME] [--pg-bin DIR [--pg-conn WORDS] [--pg-clients LIST]]
+          [--smoke] [--json] [--report DIR [--machine M]]
                               the M1 numbers of spec/23 section 23.4 with the rupg facade at the commit of pins.toml.
                               empty makes a database with the default options and gives the size of the file. latency
                               times --commits (10,000) commits of one row at one writer after --warmup (1,000). throughput
@@ -136,8 +139,11 @@ commands:
                               commit until --log-mib (1,024) MiB of values are in the log and exits with no close. Then it
                               drops the file from the page cache with dd where it can and times the open that replays the log.
                               latency also times 1,000 fdatasync calls after writes of 4 KiB in DIR. ring runs the same
-                              load of --log-mib MiB with --writers, 100 rows of --value bytes in each commit, with the
-                              default log ring and with a ring of one extent (16 MiB). With --cgroup, m1 moves itself into
+                              load of --log-mib MiB with --writers, 100 rows of --value bytes in each commit, and a commit
+                              run of up to 10 s, with the default log ring, with a ring of 8 MiB for each writer and with
+                              a ring of one extent (16 MiB). postgresql runs pgbench from --pg-bin with one durable insert
+                              in each transaction for --seconds at each count of --pg-clients (1, cores, 8, 32) on the server
+                              of --pg-conn (user=postgres dbname=postgres). It is a default step only with --pg-bin. With --cgroup, m1 moves itself into
                               the cgroup /sys/fs/cgroup/rupg-bench/NAME (Linux, as root) and gives the device write bytes
                               of io.stat for each step.
   --version                   print the version";
@@ -194,6 +200,11 @@ fn run(argv: &[String]) -> Result<(), String> {
         "fixed-set" => fixed_set_command(a)?,
         "m1" => m1_command(a)?,
         "m1-fill" => m1_fill_command(a)?,
+        "m1-op" => {
+            let op = a.value("op").ok_or("usage: m1-op needs --op NAME")?;
+            a.finish()?;
+            m1::op(&op)?
+        }
         "--version" | "-V" => println!("rupg-bench {}", env!("CARGO_PKG_VERSION")),
         "--help" | "-h" | "help" => println!("{USAGE}"),
         other => return Err(format!("usage: unknown command {other:?}\n{USAGE}")),
@@ -447,6 +458,22 @@ fn answers_command(mut a: args::Args) -> Result<(), String> {
 }
 
 /// A number option with a default.
+/// The numbers of `--name`, split at commas, with no repeat. With no `--name` it gives `default`, also with no repeat.
+fn list(a: &mut args::Args, name: &str, default: &[usize]) -> Result<Vec<usize>, String> {
+    let mut out: Vec<usize> = match a.value(name) {
+        Some(v) => v
+            .split(',')
+            .map(|n| {
+                n.parse().map_err(|_| format!("usage: --{name} {v:?} is not a list of numbers"))
+            })
+            .collect::<Result<_, _>>()?,
+        None => default.to_vec(),
+    };
+    out.sort_unstable();
+    out.dedup();
+    Ok(out)
+}
+
 fn number<T: std::str::FromStr>(a: &mut args::Args, name: &str, default: T) -> Result<T, String> {
     match a.value(name) {
         None => Ok(default),
@@ -475,18 +502,34 @@ fn m1_config(a: &mut args::Args, dir: PathBuf) -> Result<m1::Config, String> {
         log_bytes,
         rows: number(a, "rows", 256)?.max(1),
         value: number(a, "value", 2_000)?.max(20),
+        postgres: match a.value("pg-bin") {
+            None => None,
+            Some(bin) => Some(m1::Postgres {
+                bin: PathBuf::from(bin),
+                conn: pg::Config::parse(
+                    &a.value("pg-conn")
+                        .unwrap_or_else(|| "user=postgres dbname=postgres".to_owned()),
+                )?,
+                clients: list(a, "pg-clients", &[1, cores, 8, 32])?,
+            }),
+        },
     })
 }
 
 /// The `m1` command: the M1 numbers of spec/23 section 23.4.
 fn m1_command(mut a: args::Args) -> Result<(), String> {
     let dir = PathBuf::from(a.value("dir").ok_or("usage: m1 needs --dir DIR")?);
-    let steps = a.value("steps").unwrap_or_else(|| m1::STEPS.join(","));
+    let steps = a.value("steps");
+    let c = m1_config(&mut a, dir)?;
+    // The postgresql step is in the default steps only with a server.
+    let steps = steps.unwrap_or_else(|| {
+        let n = if c.postgres.is_some() { m1::STEPS.len() } else { m1::STEPS.len() - 1 };
+        m1::STEPS[..n].join(",")
+    });
     let steps: Vec<&str> = steps.split(',').collect();
     if let Some(s) = steps.iter().find(|s| !m1::STEPS.contains(s)) {
         return Err(format!("usage: {s:?} is not a step of m1"));
     }
-    let c = m1_config(&mut a, dir)?;
     let smoke = a.flag("smoke");
     let json = a.flag("json");
     let report_dir = a.value("report");
@@ -544,12 +587,17 @@ date            {}
             "latency" => m1::latency(&c),
             "throughput" => m1::throughput(&c),
             "ring" => m1::ring(&c),
+            "postgresql" => m1::postgresql(&c),
             _ => m1::recovery(&c),
         };
         match r {
             Ok((j, mut text)) => {
                 // The device write bytes of the step, from io.stat. A write that the kernel flushes after the step counts in the next step.
-                let bytes = before.zip(written()).map(|(b, a)| a.saturating_sub(b));
+                // The PostgreSQL server is not in the cgroup, so the postgresql step has no write bytes.
+                let bytes = before
+                    .zip(written())
+                    .map(|(b, a)| a.saturating_sub(b))
+                    .filter(|_| *step != "postgresql");
                 if let Some(b) = bytes {
                     text.push_str(&format!("                io.stat write {}\n", cgroup::mib(b)));
                 }
@@ -839,7 +887,12 @@ fn pgbench_run(
 
 /// The `instructions` command.
 fn instructions_command(mut a: args::Args) -> Result<(), String> {
-    let queries = a.value("queries").ok_or("usage: instructions needs --queries PATH")?;
+    let m1_set = a.flag("m1");
+    let queries = match a.value("queries") {
+        Some(q) => q,
+        None if m1_set => "m1".to_owned(),
+        None => return Err("usage: instructions needs --queries PATH or --m1".to_owned()),
+    };
     let set_name = a.value("set").ok_or("usage: instructions needs --set NAME")?;
     if !set_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
         return Err(format!(
@@ -865,7 +918,11 @@ fn instructions_command(mut a: args::Args) -> Result<(), String> {
         conn.password = Some(p.trim().to_owned());
     }
     let engine_name = a.value("engine");
-    let engine = if let Some(db) = a.value("duckdb") {
+    let engine = if m1_set {
+        let exe = std::env::current_exe().map_err(|e| format!("rupg-bench: {e}"))?;
+        let argv = [exe.display().to_string(), "m1-op".to_owned(), "--op".to_owned()];
+        instructions::Engine::UserOnly(argv.to_vec())
+    } else if let Some(db) = a.value("duckdb") {
         let duckdb = a.value("duckdb-bin").unwrap_or_else(|| "duckdb".to_owned());
         let threads: u32 = number(&mut a, "threads", 1)?;
         let argv = [
@@ -905,6 +962,7 @@ fn instructions_command(mut a: args::Args) -> Result<(), String> {
     a.finish()?;
     let engine_name = match (&engine, engine_name) {
         (_, Some(n)) => n,
+        (instructions::Engine::UserOnly(_), None) => "rupg".to_owned(),
         (instructions::Engine::InProcess(_), None) => "duckdb".to_owned(),
         (instructions::Engine::Server { .. }, None) => {
             return Err("usage: give --engine NAME for a server, for example postgresql".to_owned());
@@ -915,12 +973,31 @@ fn instructions_command(mut a: args::Args) -> Result<(), String> {
             "usage: the engine name {engine_name:?} may have only letters, digits, _ and -"
         ));
     }
-    let set = instructions::read_set(Path::new(&queries))?;
+    let (set, base) = if m1_set {
+        let set = m1::OPS
+            .iter()
+            .map(|op| instructions::Query { name: (*op).to_owned(), sql: (*op).to_owned() })
+            .collect();
+        (set, "base")
+    } else {
+        (instructions::read_set(Path::new(&queries))?, "SELECT 1")
+    };
     if set.is_empty() {
         return Err(format!("{queries} has no query"));
     }
-    let meta =
-        report::Meta::now(&format!("instructions-{set_name}-{engine_name}"), machine, None, smoke);
+    // The M1 set links rupg at the commit of pins.toml, so its report names that commit.
+    let commit = if m1_set {
+        let pins = pins::Pins::load(concat!(env!("CARGO_MANIFEST_DIR"), "/pins.toml"))?;
+        pins.get("rupg", "commit").map(|c| c.chars().take(8).collect())
+    } else {
+        None
+    };
+    let meta = report::Meta::now(
+        &format!("instructions-{set_name}-{engine_name}"),
+        machine,
+        commit,
+        smoke,
+    );
     let mut result = meta.to_json();
     if smoke {
         result =
@@ -936,7 +1013,7 @@ fn instructions_command(mut a: args::Args) -> Result<(), String> {
             std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default().trim(),
         )
         .with("engine", engine.to_json());
-    let counts = instructions::count(&engine, &set, repeat, |line| {
+    let counts = instructions::count(&engine, &set, base, repeat, |line| {
         if !json {
             println!("{line}");
         }
@@ -968,7 +1045,7 @@ fn instructions_command(mut a: args::Args) -> Result<(), String> {
     if json {
         print!("{}", result.pretty());
     } else {
-        println!("base     {:?} for SELECT 1", counts.base);
+        println!("base     {:?} for {base}", counts.base);
         println!(
             "total    {} net instructions in {} queries",
             counts.total(),

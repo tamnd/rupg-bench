@@ -67,6 +67,8 @@ fn natural_key(name: &str) -> (String, u64) {
 pub(crate) enum Engine {
     /// The client program with the engine in its process: argv before the query.
     InProcess(Vec<String>),
+    /// A program with the engine in its process that does no work of the kernel for its data, such as the operations of the M1 set on the in-memory file system: argv before the query. perf counts only the instructions in user mode, so the page faults of the process do not add noise.
+    UserOnly(Vec<String>),
     /// A server in a cgroup (the path under `/sys/fs/cgroup`) and its client: the full argv. The client reads the query on its standard input, so a long set such as 100 New-Orders does not hit the limit of the kernel on one argument, and psql sends each statement as its own message, as a driver does. The password goes to the client in `PGPASSWORD`, so it is not on a command line.
     Server { cgroup: String, client: Vec<String>, password: Option<String> },
 }
@@ -75,9 +77,11 @@ impl Engine {
     /// The `perf stat` command for one query. perf writes its counts to `out`.
     fn command(&self, sql: &str, out: &Path) -> Command {
         let mut c = Command::new("perf");
-        c.args(["stat", "-e", "instructions", "-x", ","]).arg("-o").arg(out);
+        let event =
+            if matches!(self, Engine::UserOnly(_)) { "instructions:u" } else { "instructions" };
+        c.args(["stat", "-e", event, "-x", ","]).arg("-o").arg(out);
         match self {
-            Engine::InProcess(argv) => {
+            Engine::InProcess(argv) | Engine::UserOnly(argv) => {
                 c.arg("--").args(argv).arg(sql);
                 c.stdin(Stdio::null());
             }
@@ -99,6 +103,9 @@ impl Engine {
             Engine::InProcess(argv) => {
                 Json::obj().with("mode", "in process").with("client", argv.clone())
             }
+            Engine::UserOnly(argv) => Json::obj()
+                .with("mode", "in process, user instructions")
+                .with("client", argv.clone()),
             Engine::Server { cgroup, client, .. } => Json::obj()
                 .with("mode", "server cgroup")
                 .with("cgroup", cgroup.as_str())
@@ -156,6 +163,17 @@ pub(crate) struct Count {
     pub(crate) net: u64,
 }
 
+impl Count {
+    /// The noise of the runs: the largest run minus the smallest, as a part of the net count.
+    pub(crate) fn spread(&self) -> f64 {
+        let (min, max) = (self.runs.iter().min(), self.runs.iter().max());
+        match (min, max) {
+            (Some(min), Some(max)) if self.net > 0 => (max - min) as f64 / self.net as f64,
+            _ => 0.0,
+        }
+    }
+}
+
 /// The counts of a set.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Counts {
@@ -185,6 +203,7 @@ impl Counts {
                 Json::obj()
                     .with("query", q.name.as_str())
                     .with("net", q.net)
+                    .with("spread", q.spread())
                     .with("runs", q.runs.clone())
             })
             .collect();
@@ -208,13 +227,14 @@ impl Counts {
 pub(crate) fn count(
     engine: &Engine,
     set: &[Query],
+    base: &str,
     repeat: usize,
     mut progress: impl FnMut(&str),
 ) -> Result<Counts, String> {
     let runs = |sql: &str| -> Result<Vec<u64>, String> {
         (0..repeat).map(|_| count_once(engine, sql)).collect()
     };
-    let base = runs("SELECT 1")?;
+    let base = runs(base)?;
     let floor = base.iter().min().copied().unwrap_or(0);
     let mut queries = Vec::new();
     for q in set {
