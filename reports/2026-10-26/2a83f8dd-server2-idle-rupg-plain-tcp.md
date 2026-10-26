@@ -1,0 +1,32 @@
+# idle-rupg-plain-tcp on server2, 2026-10-26
+
+This is a measured run with the rules of spec/20.
+
+| Field | Value |
+|---|---|
+| unix_time | 1793033837 |
+| kernel | 6.8.0-147-generic |
+| suite | idle-rupg-plain-tcp |
+| machine | server2 |
+| date | 2026-10-26 |
+| commit | 2a83f8dd |
+| smoke | false |
+| server | pid 2216634 and the processes below it |
+| variant | plain |
+| transport | tcp |
+
+## idle
+
+| Field | Value |
+|---|---|
+| server_version | 19.0 (rupg 0.3.0) |
+| sessions | 1000 |
+| pss_before_bytes | 23224320 |
+| pss_after_bytes | 63216640 |
+| pss_per_session_bytes | 39992 |
+| memory_current_before_bytes | null |
+| memory_current_after_bytes | null |
+| memory_current_per_session_bytes | null |
+| limit_bytes | 65536 |
+| passes | true |
+
