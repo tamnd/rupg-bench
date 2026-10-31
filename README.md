@@ -104,6 +104,8 @@ rupg-bench load --case a --source hits.parquet --name duckdb-load --du hits.db -
   duckdb hits.db -c "CREATE TABLE hits AS SELECT * FROM read_parquet('hits.parquet'); CHECKPOINT;"
 ```
 
+`rupg-bench compare --base FILE --new FILE` compares two ClickBench result files, for example PostgreSQL against rupg, or two commits of rupg. For each query it takes the hot time (the best try after the first) and prints the speedup `(base + 0.01) / (new + 0.01)`, with the 10 ms that ClickBench adds. The summary is the geometric mean of the speedups over the queries that have a time in both files. It also prints the ratios of `load_time`, `data_size` and `concurrent_qps`. `--min-speedup X` fails when the mean is below X, so a script can check the 10x goal.
+
 `rupg-bench answers` compares two answer sets as multisets of rows (spec/20 section 20.5). An answer set is a directory with one file `<query>.tsv` for each query: a header line with the column names, then the rows in the text format of PostgreSQL `COPY`, with `\N` for NULL. So `COPY (<query>) TO STDOUT WITH (HEADER)` writes one. Floats match within a relative 1e-9. An expected file `<query>.out` is a file of the TPC-H answer set at SF1, and its values match with the rules of TPC-H clause 2.1.3.5: equal column values and counts, sums within 100, and averages and ratios within 1 percent. The TPC-H tools are under the TPC EULA, so the harness fetches the answer set at the pin of `pins.toml` and this repository does not hold a copy.
 
 ```sh
