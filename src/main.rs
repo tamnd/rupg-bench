@@ -15,6 +15,7 @@ mod answers;
 mod args;
 mod cgroup;
 mod clickbench;
+mod compare;
 mod connect;
 mod gates;
 mod idle;
@@ -56,6 +57,11 @@ commands:
                               compare two answer sets as multisets of rows (spec/20 section 20.5).
                               PATH is a file or a directory of <query>.tsv files. An expected file
                               <query>.out is a TPC-H answer file and is compared with the rules of TPC-H clause 2.1.3.5.
+  compare --base FILE --new FILE [--min-speedup X] [--json]
+                              compare two ClickBench result files (the --result-file output, or a file of ClickBench).
+                              Each query has the hot time (the best try after the first) and the speedup
+                              (base + 0.01) / (new + 0.01). The summary is the geometric mean of the speedups.
+                              --min-speedup fails when that mean is below X.
   pgbench (--unit UNIT | --attach PATH) [--conn WORDS] [--bin DIR] [--scale N] [--clients N] [--jobs N] [--time SECONDS]
           [--smoke] [--json] [--report DIR [--machine M]]
                               run pgbench -i and the TPC-B like script against the server, measure the server cgroup
@@ -192,6 +198,7 @@ fn run(argv: &[String]) -> Result<(), String> {
         "instructions" => instructions_command(a)?,
         "tpch" => tpch_command(a)?,
         "clickbench" => clickbench_command(a)?,
+        "compare" => compare_command(a)?,
         "pgbench" => pgbench_command(a)?,
         "idle" => idle_command(a)?,
         "connect" => connect_command(a)?,
@@ -407,6 +414,36 @@ fn report_command(mut a: args::Args) -> Result<(), String> {
 }
 
 /// The `answers` command.
+/// The `compare` command.
+fn compare_command(mut a: args::Args) -> Result<(), String> {
+    let base = a.value("base").ok_or("usage: compare needs --base FILE")?;
+    let new = a.value("new").ok_or("usage: compare needs --new FILE")?;
+    let min = a
+        .value("min-speedup")
+        .map(|m| m.parse::<f64>().map_err(|e| format!("--min-speedup {m}: {e}")))
+        .transpose()?;
+    let as_json = a.flag("json");
+    a.finish()?;
+    let read = |f: &str| {
+        let text = std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?;
+        Json::parse(&text).map_err(|e| format!("{f}: {e}"))
+    };
+    let (base, new) = (read(&base)?, read(&new)?);
+    let lines = compare::lines(&base, &new)?;
+    if as_json {
+        print!("{}", compare::json(&lines).pretty());
+    } else {
+        print!("{}", compare::table(&base, &new, &lines));
+    }
+    if let Some(min) = min {
+        let mean = compare::geomean(&lines).map_or(0.0, |(g, _)| g);
+        if mean < min {
+            return Err(format!("the geomean speedup {mean:.2}x is below {min}x"));
+        }
+    }
+    Ok(())
+}
+
 fn answers_command(mut a: args::Args) -> Result<(), String> {
     let expected = a.value("expected").ok_or("usage: answers needs --expected PATH")?;
     let actual = a.value("actual").ok_or("usage: answers needs --actual PATH")?;
