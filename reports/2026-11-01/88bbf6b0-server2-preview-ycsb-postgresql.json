@@ -1,0 +1,469 @@
+{
+  "suite": "ycsb-postgresql",
+  "machine": "server2-preview",
+  "date": "2026-11-01",
+  "commit": "88bbf6b0",
+  "smoke": false,
+  "engine_name": "postgresql",
+  "cgroup": "/sys/fs/cgroup/system.slice/m3w-yp.service",
+  "records": 100000,
+  "field_count": 10,
+  "field_length": 100,
+  "distribution": "scrambled zipfian, constant 0.99",
+  "time_s": 60,
+  "seed": 1,
+  "kernel": "6.8.0-147-generic",
+  "server_version": "19beta4",
+  "synchronous_commit": {
+    "server": "on",
+    "run": "on",
+    "set_by_driver": false
+  },
+  "load": {
+    "records": 100000,
+    "secs": 15.702,
+    "statements": "CREATE TABLE, COPY FROM STDIN, VACUUM ANALYZE, CHECKPOINT",
+    "server": {
+      "wall_s": 15.701812082,
+      "cpu_usec": 11409300,
+      "user_usec": 7010706,
+      "system_usec": 4398595,
+      "rbytes": 0,
+      "wbytes": 347934720,
+      "memory_peak_bytes": 397983744,
+      "memory_peak_scope": "since the cgroup was created",
+      "file_max_bytes": 331853824,
+      "pss_max_bytes": 174466048,
+      "memory_current_max_bytes": 397877248,
+      "samples": 59
+    }
+  },
+  "idle_base": {
+    "wall_s": 10.006016341,
+    "cpu_usec": 14895,
+    "user_usec": 4616,
+    "system_usec": 10280,
+    "rbytes": 0,
+    "wbytes": 8192,
+    "memory_peak_bytes": 397983744,
+    "memory_peak_scope": "since the cgroup was created",
+    "file_max_bytes": 331968512,
+    "pss_max_bytes": 109674496,
+    "memory_current_max_bytes": 349954048,
+    "samples": 55
+  },
+  "rows": [
+    {
+      "workload": "a",
+      "clients": 1,
+      "pipeline": 1,
+      "ops": 5862,
+      "secs": 60.078,
+      "ops_per_s": 98,
+      "errors": 0,
+      "first_error": null,
+      "server_cpu_usec_per_op": 1234.7,
+      "server_memory_peak": 397983744,
+      "read": {
+        "count": 2931,
+        "mean_us": 1931.5,
+        "p50_us": 191.5,
+        "p95_us": 1703.9,
+        "p99_us": 71827.5,
+        "p999_us": 189792.3,
+        "max_us": 396594.4
+      },
+      "update": {
+        "count": 2931,
+        "mean_us": 18559.1,
+        "p50_us": 1957.9,
+        "p95_us": 97517.6,
+        "p99_us": 193986.6,
+        "p999_us": 492830.7,
+        "max_us": 680891
+      },
+      "hottest_key": {
+        "key": "user6166968228214299628",
+        "updates": 97,
+        "updates_per_s": 1.6
+      },
+      "server": {
+        "wall_s": 60.282929444,
+        "cpu_usec": 7237787,
+        "user_usec": 3724568,
+        "system_usec": 3513219,
+        "rbytes": 0,
+        "wbytes": 49483776,
+        "memory_peak_bytes": 397983744,
+        "memory_peak_scope": "since the cgroup was created",
+        "file_max_bytes": 364683264,
+        "pss_max_bytes": 141485056,
+        "memory_current_max_bytes": 384696320,
+        "samples": 172
+      },
+      "check": {
+        "acknowledged_updates": 2931,
+        "fields_checked": 2617,
+        "fields_wrong": 0,
+        "examples": []
+      }
+    },
+    {
+      "workload": "a",
+      "clients": 16,
+      "pipeline": 1,
+      "ops": 43784,
+      "secs": 60.105,
+      "ops_per_s": 728,
+      "errors": 0,
+      "first_error": null,
+      "server_cpu_usec_per_op": 1037.7,
+      "server_memory_peak": 564350976,
+      "read": {
+        "count": 21923,
+        "mean_us": 7736.6,
+        "p50_us": 389.1,
+        "p95_us": 71827.5,
+        "p99_us": 125829.1,
+        "p999_us": 289407,
+        "max_us": 888191.4
+      },
+      "update": {
+        "count": 21861,
+        "mean_us": 36152.7,
+        "p50_us": 6389.8,
+        "p95_us": 173015,
+        "p99_us": 267386.9,
+        "p999_us": 402653.2,
+        "max_us": 773048.6
+      },
+      "hottest_key": {
+        "key": "user6166968228214299628",
+        "updates": 766,
+        "updates_per_s": 12.7
+      },
+      "server": {
+        "wall_s": 60.301288489,
+        "cpu_usec": 45436661,
+        "user_usec": 25039979,
+        "system_usec": 20396682,
+        "rbytes": 0,
+        "wbytes": 125288448,
+        "memory_peak_bytes": 564350976,
+        "memory_peak_scope": "since the cgroup was created",
+        "file_max_bytes": 453922816,
+        "pss_max_bytes": 298461184,
+        "memory_current_max_bytes": 559886336,
+        "samples": 40
+      },
+      "check": {
+        "acknowledged_updates": 21861,
+        "fields_checked": 17801,
+        "fields_wrong": 0,
+        "examples": []
+      }
+    },
+    {
+      "workload": "b",
+      "clients": 1,
+      "pipeline": 1,
+      "ops": 25635,
+      "secs": 60.004,
+      "ops_per_s": 427,
+      "errors": 0,
+      "first_error": null,
+      "server_cpu_usec_per_op": 411.4,
+      "server_memory_peak": 564350976,
+      "read": {
+        "count": 24392,
+        "mean_us": 1609.9,
+        "p50_us": 105.5,
+        "p95_us": 946.2,
+        "p99_us": 66846.7,
+        "p999_us": 219152.4,
+        "max_us": 761663.3
+      },
+      "update": {
+        "count": 1243,
+        "mean_us": 16488.5,
+        "p50_us": 1949.7,
+        "p95_us": 87556.1,
+        "p99_us": 176160.8,
+        "p999_us": 499122.2,
+        "max_us": 519700.1
+      },
+      "hottest_key": {
+        "key": "user6166968228214299628",
+        "updates": 38,
+        "updates_per_s": 0.6
+      },
+      "server": {
+        "wall_s": 60.182756454,
+        "cpu_usec": 10545848,
+        "user_usec": 6120955,
+        "system_usec": 4424893,
+        "rbytes": 0,
+        "wbytes": 16834560,
+        "memory_peak_bytes": 564350976,
+        "memory_peak_scope": "since the cgroup was created",
+        "file_max_bytes": 460341248,
+        "pss_max_bytes": 224346112,
+        "memory_current_max_bytes": 482066432,
+        "samples": 143
+      },
+      "check": {
+        "acknowledged_updates": 1243,
+        "fields_checked": 1143,
+        "fields_wrong": 0,
+        "examples": []
+      }
+    },
+    {
+      "workload": "b",
+      "clients": 16,
+      "pipeline": 1,
+      "ops": 91881,
+      "secs": 60.228,
+      "ops_per_s": 1526,
+      "errors": 0,
+      "first_error": null,
+      "server_cpu_usec_per_op": 543.2,
+      "server_memory_peak": 591122432,
+      "read": {
+        "count": 87257,
+        "mean_us": 8970.5,
+        "p50_us": 206.8,
+        "p95_us": 76021.8,
+        "p99_us": 176160.8,
+        "p999_us": 394264.6,
+        "max_us": 990486.6
+      },
+      "update": {
+        "count": 4624,
+        "mean_us": 38022.6,
+        "p50_us": 6520.8,
+        "p95_us": 175112.2,
+        "p99_us": 293601.3,
+        "p999_us": 402653.2,
+        "max_us": 493482.8
+      },
+      "hottest_key": {
+        "key": "user6166968228214299628",
+        "updates": 172,
+        "updates_per_s": 2.9
+      },
+      "server": {
+        "wall_s": 60.443586847,
+        "cpu_usec": 49908678,
+        "user_usec": 30058639,
+        "system_usec": 19850040,
+        "rbytes": 0,
+        "wbytes": 36995072,
+        "memory_peak_bytes": 591122432,
+        "memory_peak_scope": "since the cgroup was created",
+        "file_max_bytes": 465428480,
+        "pss_max_bytes": 325419008,
+        "memory_current_max_bytes": 590229504,
+        "samples": 18
+      },
+      "check": {
+        "acknowledged_updates": 4624,
+        "fields_checked": 4048,
+        "fields_wrong": 0,
+        "examples": []
+      }
+    },
+    {
+      "workload": "c",
+      "clients": 1,
+      "pipeline": 1,
+      "ops": 58497,
+      "secs": 60,
+      "ops_per_s": 975,
+      "errors": 0,
+      "first_error": null,
+      "server_cpu_usec_per_op": 304.2,
+      "server_memory_peak": 591122432,
+      "read": {
+        "count": 58497,
+        "mean_us": 1012.6,
+        "p50_us": 103.9,
+        "p95_us": 448.5,
+        "p99_us": 13041.7,
+        "p999_us": 109051.9,
+        "max_us": 1082338.3
+      },
+      "server": {
+        "wall_s": 60.009730454,
+        "cpu_usec": 17793052,
+        "user_usec": 11445322,
+        "system_usec": 6347730,
+        "rbytes": 0,
+        "wbytes": 425984,
+        "memory_peak_bytes": 591122432,
+        "memory_peak_scope": "since the cgroup was created",
+        "file_max_bytes": 465428480,
+        "pss_max_bytes": 239418368,
+        "memory_current_max_bytes": 486584320,
+        "samples": 129
+      },
+      "check": {
+        "acknowledged_updates": 0,
+        "fields_checked": 0,
+        "fields_wrong": 0,
+        "examples": []
+      }
+    },
+    {
+      "workload": "c",
+      "clients": 16,
+      "pipeline": 1,
+      "ops": 164183,
+      "secs": 60.208,
+      "ops_per_s": 2727,
+      "errors": 0,
+      "first_error": null,
+      "server_cpu_usec_per_op": 388.1,
+      "server_memory_peak": 591122432,
+      "read": {
+        "count": 164183,
+        "mean_us": 5838.4,
+        "p50_us": 175.1,
+        "p95_us": 61079.6,
+        "p99_us": 100663.3,
+        "p999_us": 276824.1,
+        "max_us": 876757.6
+      },
+      "server": {
+        "wall_s": 60.586951341,
+        "cpu_usec": 63714877,
+        "user_usec": 38451107,
+        "system_usec": 25263771,
+        "rbytes": 0,
+        "wbytes": 0,
+        "memory_peak_bytes": 591122432,
+        "memory_peak_scope": "since the cgroup was created",
+        "file_max_bytes": 465453056,
+        "pss_max_bytes": 271435776,
+        "memory_current_max_bytes": 520613888,
+        "samples": 32
+      },
+      "check": {
+        "acknowledged_updates": 0,
+        "fields_checked": 0,
+        "fields_wrong": 0,
+        "examples": []
+      }
+    },
+    {
+      "workload": "f",
+      "clients": 1,
+      "pipeline": 1,
+      "ops": 10219,
+      "secs": 60.003,
+      "ops_per_s": 170,
+      "errors": 0,
+      "first_error": null,
+      "server_cpu_usec_per_op": 1001.9,
+      "server_memory_peak": 591122432,
+      "read": {
+        "count": 5177,
+        "mean_us": 1578.5,
+        "p50_us": 144.4,
+        "p95_us": 1998.8,
+        "p99_us": 71303.2,
+        "p999_us": 168820.7,
+        "max_us": 387122.1
+      },
+      "read_modify_write": {
+        "count": 5042,
+        "mean_us": 10272.2,
+        "p50_us": 1441.8,
+        "p95_us": 74973.2,
+        "p99_us": 102760.4,
+        "p999_us": 198180.9,
+        "max_us": 491415.8
+      },
+      "hottest_key": {
+        "key": "user6166968228214299628",
+        "updates": 193,
+        "updates_per_s": 3.2
+      },
+      "server": {
+        "wall_s": 60.007082343,
+        "cpu_usec": 10238815,
+        "user_usec": 5408659,
+        "system_usec": 4830157,
+        "rbytes": 0,
+        "wbytes": 49324032,
+        "memory_peak_bytes": 591122432,
+        "memory_peak_scope": "since the cgroup was created",
+        "file_max_bytes": 467443712,
+        "pss_max_bytes": 229799936,
+        "memory_current_max_bytes": 488779776,
+        "samples": 194
+      },
+      "check": {
+        "acknowledged_updates": 5042,
+        "fields_checked": 4381,
+        "fields_wrong": 0,
+        "examples": []
+      }
+    },
+    {
+      "workload": "f",
+      "clients": 16,
+      "pipeline": 1,
+      "ops": 38194,
+      "secs": 60.322,
+      "ops_per_s": 633,
+      "errors": 0,
+      "first_error": null,
+      "server_cpu_usec_per_op": 1226,
+      "server_memory_peak": 616083456,
+      "read": {
+        "count": 19029,
+        "mean_us": 8380.7,
+        "p50_us": 370.7,
+        "p95_us": 73400.3,
+        "p99_us": 165675,
+        "p999_us": 371195.9,
+        "max_us": 781370.7
+      },
+      "read_modify_write": {
+        "count": 19165,
+        "mean_us": 41825,
+        "p50_us": 7602.2,
+        "p95_us": 181403.6,
+        "p99_us": 287309.8,
+        "p999_us": 497025,
+        "max_us": 885493
+      },
+      "hottest_key": {
+        "key": "user6166968228214299628",
+        "updates": 723,
+        "updates_per_s": 12
+      },
+      "server": {
+        "wall_s": 60.890742859,
+        "cpu_usec": 46825932,
+        "user_usec": 26400313,
+        "system_usec": 20425620,
+        "rbytes": 0,
+        "wbytes": 102301696,
+        "memory_peak_bytes": 616083456,
+        "memory_peak_scope": "since the cgroup was created",
+        "file_max_bytes": 490377216,
+        "pss_max_bytes": 328164352,
+        "memory_current_max_bytes": 614449152,
+        "samples": 42
+      },
+      "check": {
+        "acknowledged_updates": 19165,
+        "fields_checked": 15571,
+        "fields_wrong": 0,
+        "examples": []
+      }
+    }
+  ]
+}
