@@ -160,7 +160,7 @@ impl Workload {
         Ok(Workload { name: n, read, update, rmw })
     }
 
-    fn pick(&self, rng: &mut Rng) -> Op {
+    pub(crate) fn pick(&self, rng: &mut Rng) -> Op {
         let u = rng.next_f64();
         if u < self.read {
             Op::Read
@@ -333,7 +333,7 @@ impl Tally {
         self.elapsed = self.elapsed.max(other.elapsed);
     }
 
-    fn error(&mut self, e: String) {
+    pub(crate) fn error(&mut self, e: String) {
         self.errors += 1;
         if self.first_error.is_none() {
             self.first_error = Some(e);

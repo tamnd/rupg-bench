@@ -35,3 +35,7 @@ codegen-units = 1
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# `ycsb-duckdb` links libduckdb. The build script finds it in DUCKDB_LIB_DIR.
+[features]
+duckdb = []
