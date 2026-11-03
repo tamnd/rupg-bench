@@ -2,7 +2,9 @@
 //!
 //! The harness runs rupg and the baselines on the same machine, with the same transport, and reports the ratio. The rules are in `spec/02-the-goal.md` and `spec/20-benchmarks.md` of tamnd/rupg.
 
-#![forbid(unsafe_code)]
+// The harness has no unsafe code. The one exception is the C API of libduckdb in `duck`, which only a build with the `duckdb` feature has.
+#![cfg_attr(not(feature = "duckdb"), forbid(unsafe_code))]
+#![cfg_attr(feature = "duckdb", deny(unsafe_code))]
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -17,6 +19,9 @@ mod cgroup;
 mod clickbench;
 mod compare;
 mod connect;
+#[cfg(feature = "duckdb")]
+#[allow(unsafe_code)]
+mod duck;
 mod gates;
 mod idle;
 mod instructions;
@@ -114,6 +119,12 @@ commands:
                               workload for each row of --rows for --time seconds (60). A row is CLIENTS, or CLIENTSxDEPTH
                               for a pipeline of DEPTH statements on each connection. --sync sets synchronous_commit on each
                               connection. The server cgroup is measured over each run, with the idle base first.
+  ycsb-duckdb --db PATH [--records N] [--steps load,run] [--workloads a,b,c,f] [--rows 1,16] [--time SECONDS] [--seed N]
+          [--threads N] [--smoke] [--json] [--report DIR [--machine M]]
+                              the same YCSB workloads on DuckDB in this process, through libduckdb, for a build with the
+                              duckdb feature. A row is CLIENTS threads, each with its own connection and no pipeline.
+                              --db :memory: has no durability. The CPU time is the time of the whole process.
+                              --threads sets the worker threads of DuckDB (its default is one for each core).
   tpcc (--unit UNIT | --attach PATH) [--hammerdb DIR] [--host H] [--port P] [--password-file F] [--steps build,procedures,statements]
           [--warehouses N] [--build-vu N] [--vu 8] [--rampup MINUTES] [--duration MINUTES] [--sync on,off] [--sync-dir DIR]
           [--work DIR] [--seed N] [--smoke] [--json] [--report DIR [--machine M]]
@@ -203,6 +214,7 @@ fn run(argv: &[String]) -> Result<(), String> {
         "idle" => idle_command(a)?,
         "connect" => connect_command(a)?,
         "ycsb" => ycsb_command(a)?,
+        "ycsb-duckdb" => ycsb_duckdb_command(a)?,
         "tpcc" => tpcc_command(a)?,
         "fixed-set" => fixed_set_command(a)?,
         "m1" => m1_command(a)?,
@@ -1517,6 +1529,213 @@ fn ycsb_command(mut a: args::Args) -> Result<(), String> {
     }
     let removed = cg.remove();
     outcome.and(removed)
+}
+
+/// The `ycsb-duckdb` command, in a build without the `duckdb` feature.
+#[cfg(not(feature = "duckdb"))]
+fn ycsb_duckdb_command(_: args::Args) -> Result<(), String> {
+    Err("this build has no DuckDB: build with --features duckdb and DUCKDB_LIB_DIR".to_owned())
+}
+
+/// The `ycsb-duckdb` command.
+#[cfg(feature = "duckdb")]
+fn ycsb_duckdb_command(mut a: args::Args) -> Result<(), String> {
+    let path = a.value("db").ok_or("usage: ycsb-duckdb needs --db PATH or --db :memory:")?;
+    let records: u64 = number(&mut a, "records", 100_000)?;
+    if records == 0 {
+        return Err("usage: --records must be at least 1".to_owned());
+    }
+    let steps = a.value("steps").unwrap_or_else(|| "load,run".to_owned());
+    let steps: Vec<&str> = steps.split(',').collect();
+    if let Some(bad) = steps.iter().find(|s| !["load", "run"].contains(s)) {
+        return Err(format!("usage: unknown step {bad:?}, the steps are load and run"));
+    }
+    let workloads = a.value("workloads").unwrap_or_else(|| "a,b,c,f".to_owned());
+    let workloads =
+        workloads.split(',').map(ycsb::Workload::get).collect::<Result<Vec<_>, String>>()?;
+    let rows = a.value("rows").unwrap_or_else(|| "1,16".to_owned());
+    let rows = rows.split(',').map(ycsb::Shape::parse).collect::<Result<Vec<_>, String>>()?;
+    if let Some(bad) = rows.iter().find(|r| r.depth != 1) {
+        return Err(format!("usage: row {}: DuckDB in the process has no pipeline", bad.name()));
+    }
+    let time: u64 = number(&mut a, "time", 60)?;
+    let seed: u64 = number(&mut a, "seed", 1)?;
+    let threads: u64 = number(&mut a, "threads", 0)?;
+    let smoke = a.flag("smoke");
+    let json = a.flag("json");
+    let report_dir = a.value("report");
+    let machine = a.value("machine");
+    a.finish()?;
+    let say = |line: &str| {
+        if !json {
+            println!("{line}");
+        }
+    };
+    let durable = path != ":memory:";
+    let meta = report::Meta::now(
+        if durable { "ycsb-duckdb" } else { "ycsb-duckdb-memory" },
+        machine,
+        None,
+        smoke,
+    );
+    let mut result = meta.to_json();
+    if smoke {
+        result =
+            result.with("note", "smoke run: it shows that the driver works, it is not a baseline");
+    }
+    result = result
+        .with("engine_name", "duckdb")
+        .with("mode", "in process, one connection for each thread, the C API of libduckdb")
+        .with("database", path.as_str())
+        .with(
+            "durability",
+            if durable { "the WAL of DuckDB at each commit" } else { "none, :memory:" },
+        )
+        .with("cpu", "the CPU time of the whole process, the engine and the client threads")
+        .with("records", records)
+        .with("field_count", ycsb::FIELDS)
+        .with("field_length", ycsb::FIELD_LENGTH)
+        .with("distribution", "scrambled zipfian, constant 0.99")
+        .with("time_s", time)
+        .with("seed", seed)
+        .with(
+            "threads",
+            if threads == 0 { "the default of DuckDB".to_owned() } else { threads.to_string() },
+        );
+    let outcome = (|| -> Result<(), String> {
+        let db = duck::Database::open(&path)?;
+        if threads > 0 {
+            db.connect()?.query(&format!("SET threads = {threads}"))?;
+        }
+        let add = |result: &mut Json, key: &str, value: Json| {
+            *result = std::mem::replace(result, Json::Null).with(key, value);
+        };
+        if steps.contains(&"load") {
+            let started = std::time::Instant::now();
+            let n = duck::load(&db, records, seed)?;
+            let secs = started.elapsed().as_secs_f64();
+            say(&format!("load     {n} records in {secs:.1} s"));
+            add(
+                &mut result,
+                "load",
+                Json::obj()
+                    .with("records", n)
+                    .with("secs", (secs * 1000.0).round() / 1000.0)
+                    .with("statements", "CREATE TABLE, an appender, CHECKPOINT"),
+            );
+        }
+        if !steps.contains(&"run") {
+            return Ok(());
+        }
+        let have = duck::count(&db)?;
+        if have != records {
+            return Err(format!(
+                "usertable has {have} rows, not --records {records}. Run the load step"
+            ));
+        }
+        let mut out = Vec::new();
+        let mut failures = Vec::new();
+        let mut row_number = 0;
+        for w in &workloads {
+            for shape in &rows {
+                row_number += 1;
+                let s = ycsb::RunSettings {
+                    workload: *w,
+                    shape: *shape,
+                    records,
+                    time: Duration::from_secs(time),
+                    seed,
+                    row: row_number,
+                    sync: None,
+                };
+                let (mut tally, retries, usage) = duck::run(&db, &s)?;
+                let check = duck::check_final(&db, std::mem::take(&mut tally.writes))?;
+                let ops = tally.ops();
+                let secs = tally.elapsed.as_secs_f64();
+                let throughput = if secs > 0.0 { ops as f64 / secs } else { 0.0 };
+                let cpu = usage.user_usec + usage.system_usec;
+                let cpu_per_op = (ops > 0).then(|| cpu as f64 / ops as f64);
+                let mut row = Json::obj()
+                    .with("workload", w.name.to_string())
+                    .with("clients", shape.clients)
+                    .with("pipeline", 1u32)
+                    .with("ops", ops)
+                    .with("secs", (secs * 1000.0).round() / 1000.0)
+                    .with("ops_per_s", throughput.round())
+                    .with("errors", tally.errors)
+                    .with("first_error", tally.first_error.clone())
+                    .with("conflict_retries", retries)
+                    .with("process_cpu_usec_per_op", cpu_per_op.map(|v| (v * 10.0).round() / 10.0))
+                    .with(
+                        "process",
+                        Json::obj()
+                            .with("user_usec", usage.user_usec)
+                            .with("system_usec", usage.system_usec)
+                            .with("peak_rss_kib", usage.peak_kib),
+                    );
+                for (op, name) in ycsb::OPS {
+                    let h = &tally.latency[op as usize];
+                    if h.count() > 0 {
+                        row = row.with(name, h.to_json());
+                    }
+                }
+                row = row.with("check", check.to_json());
+                let p = |op: ycsb::Op, q: f64| {
+                    tally.latency[op as usize]
+                        .quantile(q)
+                        .map_or("-".to_owned(), |n| format!("{:.0}", n as f64 / 1000.0))
+                };
+                say(&format!(
+                    "{} {:<10} {:>10.0} ops/s  read p50 {} p99 {} us  update p50 {} p99 {} us  cpu {} us/op  retries {retries}  errors {}",
+                    w.name,
+                    shape.name(),
+                    throughput,
+                    p(ycsb::Op::Read, 0.5),
+                    p(ycsb::Op::Read, 0.99),
+                    p(ycsb::Op::Update, 0.5),
+                    p(ycsb::Op::Update, 0.99),
+                    cpu_per_op.map_or("-".to_owned(), |v| format!("{v:.1}")),
+                    tally.errors
+                ));
+                if check.bad > 0 {
+                    failures.push(format!(
+                        "workload {} with {}: {} fields do not hold their last acknowledged update: {}",
+                        w.name,
+                        shape.name(),
+                        check.bad,
+                        check.examples.join("; ")
+                    ));
+                }
+                if tally.errors > 0 {
+                    failures.push(format!(
+                        "workload {} with {}: {} errors, the first: {}",
+                        w.name,
+                        shape.name(),
+                        tally.errors,
+                        tally.first_error.unwrap_or_default()
+                    ));
+                }
+                out.push(row);
+            }
+        }
+        add(&mut result, "rows", out.into());
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("wrong answers, the rows are not numbers: {}", failures.join("; ")))
+        }
+    })();
+    if let Err(e) = &outcome {
+        result = result.with("error", e.as_str());
+    }
+    if let Some(dir) = &report_dir {
+        let (md, js) = report::write(Path::new(dir), &result)?;
+        say(&format!("report   {}\n         {}", md.display(), js.display()));
+    }
+    if json {
+        print!("{}", result.pretty());
+    }
+    outcome
 }
 
 /// The steps of the `ycsb` command. They add their numbers to `result`.
